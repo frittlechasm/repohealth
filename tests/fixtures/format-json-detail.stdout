@@ -7,15 +7,34 @@
         "kind": "outgoing",
         "text": "↑ 1 outgoing",
         "note": "",
-        "detail": "__C__\tc5591b6  Add beta line\n1\t0\ttracked.txt\n__E__",
-        "drafts": ""
+        "detail": [
+          {
+            "title": "c5591b6  Add beta line",
+            "files": [
+              {
+                "added": 1,
+                "removed": 0,
+                "path": "tracked.txt"
+              }
+            ]
+          }
+        ],
+        "drafts": []
       },
       "work": {
         "kind": "changes",
         "text": "* 1 modified, 1 untracked",
         "note": "",
-        "detail": "1\t0\ttracked.txt",
-        "untracked": "notes.tmp"
+        "detail": [
+          {
+            "added": 1,
+            "removed": 0,
+            "path": "tracked.txt"
+          }
+        ],
+        "untracked": [
+          "notes.tmp"
+        ]
       }
     }
   ],

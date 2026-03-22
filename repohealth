@@ -78,6 +78,114 @@ json_escape() {
   printf -v "$_var" '%s' "$_s"
 }
 
+print_json_string_array() {
+  local indent="$1"
+  local block="$2"
+  local first=1 line je
+
+  block="$(trim_trailing_newlines "$block")"
+  if [ -z "$block" ]; then
+    printf '[]'
+    return
+  fi
+
+  printf '[\n'
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    [ "$first" -eq 0 ] && printf ',\n'
+    first=0
+    json_escape je "$line"
+    printf '%s  "%s"' "$indent" "$je"
+  done <<EOF
+$block
+EOF
+  printf '\n%s]' "$indent"
+}
+
+print_json_numstat_array() {
+  local indent="$1"
+  local block="$2"
+  local first=1 added removed path je
+
+  block="$(trim_trailing_newlines "$block")"
+  if [ -z "$block" ]; then
+    printf '[]'
+    return
+  fi
+
+  printf '[\n'
+  while IFS=$'\t' read -r added removed path; do
+    [ -n "$added$removed$path" ] || continue
+    [ "$first" -eq 0 ] && printf ',\n'
+    first=0
+    printf '%s  {\n' "$indent"
+    if [ "$added" = "-" ]; then
+      printf '%s    "added": null,\n' "$indent"
+    else
+      printf '%s    "added": %s,\n' "$indent" "$added"
+    fi
+    if [ "$removed" = "-" ]; then
+      printf '%s    "removed": null,\n' "$indent"
+    else
+      printf '%s    "removed": %s,\n' "$indent" "$removed"
+    fi
+    json_escape je "$path"
+    printf '%s    "path": "%s"\n' "$indent" "$je"
+    printf '%s  }' "$indent"
+  done <<EOF
+$block
+EOF
+  printf '\n%s]' "$indent"
+}
+
+print_json_commit_detail_array() {
+  local indent="$1"
+  local raw="$2"
+  local first=1 line current_title current_stats je
+  local tab=$'\t'
+
+  raw="$(trim_trailing_newlines "$raw")"
+  if [ -z "$raw" ]; then
+    printf '[]'
+    return
+  fi
+
+  printf '[\n'
+  current_title=""
+  current_stats=""
+  while IFS= read -r line; do
+    case "$line" in
+    "__C__${tab}"*)
+      current_title="${line#"__C__${tab}"}"
+      current_stats=""
+      ;;
+    "__E__")
+      [ "$first" -eq 0 ] && printf ',\n'
+      first=0
+      printf '%s  {\n' "$indent"
+      json_escape je "$current_title"
+      printf '%s    "title": "%s",\n' "$indent" "$je"
+      printf '%s    "files": ' "$indent"
+      print_json_numstat_array "${indent}    " "$current_stats"
+      printf '\n%s  }' "$indent"
+      current_title=""
+      current_stats=""
+      ;;
+    *)
+      if [ -n "$current_stats" ]; then
+        current_stats="${current_stats}"$'\n'"$line"
+      else
+        current_stats="$line"
+      fi
+      ;;
+    esac
+  done <<EOF
+$raw
+EOF
+
+  printf '\n%s]' "$indent"
+}
+
 canonicalize_dir() {
   local path="$1"
   if command_exists realpath; then
@@ -1655,8 +1763,14 @@ print_json_view() {
     json_escape je "${REPO_PUSH_PLAIN[$i]}";  printf '        "text": "%s",\n' "$je"
     json_escape je "${REPO_PUSH_NOTE[$i]}";   printf '        "note": "%s"' "$je"
     if [ "$DETAIL_MODE" -eq 1 ]; then
-      json_escape je "${REPO_PUSH_DETAIL[$i]}";  printf ',\n        "detail": "%s"' "$je"
-      json_escape je "${REPO_DRAFT_DETAIL[$i]}"; printf ',\n        "drafts": "%s"' "$je"
+      printf ',\n        "detail": '
+      if [[ "${REPO_PUSH_DETAIL[$i]}" == __C__$'\t'* ]]; then
+        print_json_commit_detail_array "        " "${REPO_PUSH_DETAIL[$i]}"
+      else
+        print_json_string_array "        " "${REPO_PUSH_DETAIL[$i]}"
+      fi
+      printf ',\n        "drafts": '
+      print_json_string_array "        " "${REPO_DRAFT_DETAIL[$i]}"
     fi
     printf '\n      },\n'
     printf '      "work": {\n'
@@ -1664,8 +1778,10 @@ print_json_view() {
     json_escape je "${REPO_WORK_PLAIN[$i]}";  printf '        "text": "%s",\n' "$je"
     json_escape je "${REPO_WORK_NOTE[$i]}";   printf '        "note": "%s"' "$je"
     if [ "$DETAIL_MODE" -eq 1 ]; then
-      json_escape je "${REPO_WORK_DETAIL[$i]}";     printf ',\n        "detail": "%s"' "$je"
-      json_escape je "${REPO_UNTRACKED_DETAIL[$i]}"; printf ',\n        "untracked": "%s"' "$je"
+      printf ',\n        "detail": '
+      print_json_numstat_array "        " "${REPO_WORK_DETAIL[$i]}"
+      printf ',\n        "untracked": '
+      print_json_string_array "        " "${REPO_UNTRACKED_DETAIL[$i]}"
     fi
     printf '\n      }\n'
     printf '    }'

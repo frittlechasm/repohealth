@@ -1,0 +1,19 @@
+-- .  [git] --------------------------------------------------------------------
+   push:  ↑ 1 outgoing
+   work:  * 1 modified, 1 untracked
+
+   ↑ Outgoing
+     c5591b6  Add beta line
+       tracked.txt                                        | 1 ++++++++++++++++++
+       total: 1 file                                      | 1  +1/-0
+
+   * Working copy
+     tracked.txt                                          | 1 ++++++++++++++++++
+     total: 1 file                                        | 1  +1/-0
+
+   ? Untracked
+     notes.tmp
+
+---------------------------------
+scanned: 1  outgoing: 1  dirty: 1
+---------------------------------

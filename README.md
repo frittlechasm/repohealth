@@ -117,7 +117,7 @@ At the end of every run, the script prints a summary line with scanned repo coun
 - The project is intentionally a single self-contained Bash script named `repohealth`.
 - There is no build, test, or lint pipeline.
 - Output is collected first and rendered second so columns can be aligned consistently.
-- Repo state collection runs in bounded parallel batches; rendering still happens in discovery order.
+- Repo state collection runs in bounded parallel batches; rendering happens in sorted path order for stable output.
 - Repo rows are written to stdout, while warnings and errors go to stderr.
 - Discovery skips common heavy directories such as `node_modules`, `vendor`, `target`, `__pycache__`, `.svn`, and `.hg`.
 - Linked Git worktrees referenced through `.git` files under `/worktrees/` are skipped intentionally.
@@ -134,6 +134,16 @@ When changing the script, validate a few representative cases:
 - Compare `--jobs 1` and the default run on the same workspace and confirm output matches.
 - Run `--detail` and confirm the detailed sections remain aligned and readable.
 - If `jj` is installed, test a repo with draft commits and one with pushable bookmark changes.
+
+## Snapshot Tests
+
+There is still no formal build or test pipeline, but the repo now includes a lightweight Bash snapshot harness for visual output checks:
+
+```bash
+./tests/run
+```
+
+The harness creates temporary Git repos, runs `repohealth` with fixed terminal settings, and compares stdout, stderr, and exit codes against checked-in fixtures under `tests/fixtures/`.
 
 ## Limitations
 

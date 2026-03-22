@@ -352,6 +352,23 @@ discover_repos() {
   done < <("${find_cmd[@]}")
 }
 
+sort_repos() {
+  local count="${#REPO_ROOTS[@]}"
+  local i j root type
+  for ((i = 0; i < count; i++)); do
+    for ((j = i + 1; j < count; j++)); do
+      if [[ "${REPO_ROOTS[$j]}" < "${REPO_ROOTS[$i]}" ]]; then
+        root="${REPO_ROOTS[$i]}"
+        type="${REPO_TYPES[$i]}"
+        REPO_ROOTS[$i]="${REPO_ROOTS[$j]}"
+        REPO_TYPES[$i]="${REPO_TYPES[$j]}"
+        REPO_ROOTS[$j]="$root"
+        REPO_TYPES[$j]="$type"
+      fi
+    done
+  done
+}
+
 set_push_status() {
   local idx="$1"
   local kind="$2"
@@ -1622,6 +1639,7 @@ main() {
   fi
 
   discover_repos
+  sort_repos
 
   collect_all_repo_states
 

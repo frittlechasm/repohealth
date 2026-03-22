@@ -10,4 +10,5 @@
 - Must run correctly on macOS and Linux.
 - All repo output goes to stdout; warnings, per-repo errors, and startup errors go to stderr.
 - Two-pass rendering: collect all repo data first, then print. Never stream output line by line — column alignment requires seeing all rows first.
+- When changing rendered CLI output, update the snapshot fixtures as needed and run `./tests/run`.
 - When both `.git` and `.jj` exist at the same root, always treat the repo as type `jj`.

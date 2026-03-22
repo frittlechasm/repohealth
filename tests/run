@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="$(
+  cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd -P
+)"
+CLI="$ROOT_DIR/repohealth"
+FIXTURES_DIR="$ROOT_DIR/tests/fixtures"
+TMP_ROOT=""
+UPDATE_SNAPSHOTS="${UPDATE_SNAPSHOTS:-0}"
+
+cleanup() {
+  if [ -n "${TMP_ROOT:-}" ] && [ -d "$TMP_ROOT" ]; then
+    rm -rf "$TMP_ROOT"
+  fi
+}
+
+fail() {
+  printf 'FAIL: %s\n' "$*" >&2
+  exit 1
+}
+
+make_temp_dir() {
+  local base="${TMPDIR:-/tmp}"
+  mktemp -d "$base/repohealth-tests.XXXXXX"
+}
+
+write_file() {
+  local path="$1"
+  local content="$2"
+  mkdir -p "$(dirname "$path")"
+  printf '%s' "$content" >"$path"
+}
+
+init_git_repo() {
+  local path="$1"
+  mkdir -p "$path"
+  if ! git init --initial-branch=main "$path" >/dev/null 2>&1; then
+    git init "$path" >/dev/null 2>&1
+    git -C "$path" checkout -b main >/dev/null 2>&1 || git -C "$path" branch -M main >/dev/null 2>&1
+  fi
+  git -C "$path" config user.name "Repohealth Tests"
+  git -C "$path" config user.email "repohealth-tests@example.com"
+}
+
+init_bare_repo() {
+  local path="$1"
+  mkdir -p "$(dirname "$path")"
+  git init --bare "$path" >/dev/null 2>&1
+}
+
+commit_all() {
+  local repo="$1"
+  local message="$2"
+  local stamp="$3"
+  git -C "$repo" add -A
+  GIT_AUTHOR_NAME="Repohealth Tests" \
+    GIT_AUTHOR_EMAIL="repohealth-tests@example.com" \
+    GIT_AUTHOR_DATE="$stamp" \
+    GIT_COMMITTER_NAME="Repohealth Tests" \
+    GIT_COMMITTER_EMAIL="repohealth-tests@example.com" \
+    GIT_COMMITTER_DATE="$stamp" \
+    git -C "$repo" commit -m "$message" >/dev/null 2>&1
+}
+
+build_workspace() {
+  local workspace="$TMP_ROOT/workspace"
+  local remotes="$TMP_ROOT/remotes"
+  mkdir -p "$workspace" "$remotes"
+
+  init_bare_repo "$remotes/clean-upstream.git"
+  init_git_repo "$workspace/clean-upstream"
+  write_file "$workspace/clean-upstream/README.md" $'clean repo\n'
+  commit_all "$workspace/clean-upstream" "Initial clean commit" "2024-01-01T00:00:00 +0000"
+  git -C "$workspace/clean-upstream" remote add origin "$remotes/clean-upstream.git"
+  git -C "$workspace/clean-upstream" push -u origin main >/dev/null 2>&1
+
+  init_bare_repo "$remotes/ahead-dirty.git"
+  init_git_repo "$workspace/ahead-dirty"
+  write_file "$workspace/ahead-dirty/tracked.txt" $'alpha\n'
+  commit_all "$workspace/ahead-dirty" "Initial upstream commit" "2024-01-02T00:00:00 +0000"
+  git -C "$workspace/ahead-dirty" remote add origin "$remotes/ahead-dirty.git"
+  git -C "$workspace/ahead-dirty" push -u origin main >/dev/null 2>&1
+  write_file "$workspace/ahead-dirty/tracked.txt" $'alpha\nbeta\n'
+  commit_all "$workspace/ahead-dirty" "Add beta line" "2024-01-03T00:00:00 +0000"
+  write_file "$workspace/ahead-dirty/tracked.txt" $'alpha\nbeta\nworktree\n'
+  write_file "$workspace/ahead-dirty/notes.tmp" $'scratch\n'
+
+  init_git_repo "$workspace/no-remote"
+  write_file "$workspace/no-remote/local.txt" $'local only\n'
+  commit_all "$workspace/no-remote" "Local only commit" "2024-01-04T00:00:00 +0000"
+
+  printf '%s' "$workspace"
+}
+
+run_cli() {
+  local stdout_file="$1"
+  local stderr_file="$2"
+  local status_file="$3"
+  shift 3
+
+  local status=0
+  set +e
+  env LC_ALL=C TZ=UTC COLUMNS=80 NO_COLOR=1 "$CLI" --no-color "$@" >"$stdout_file" 2>"$stderr_file"
+  status=$?
+  set -e
+  printf '%s\n' "$status" >"$status_file"
+}
+
+compare_file() {
+  local label="$1"
+  local expected="$2"
+  local actual="$3"
+
+  if [ "$UPDATE_SNAPSHOTS" = "1" ]; then
+    mkdir -p "$(dirname "$expected")"
+    cp "$actual" "$expected"
+    return
+  fi
+
+  if git diff --no-index --quiet -- "$expected" "$actual" >/dev/null 2>&1; then
+    return
+  fi
+
+  printf 'Snapshot mismatch: %s\n' "$label" >&2
+  git diff --no-index -- "$expected" "$actual" >&2 || true
+  exit 1
+}
+
+assert_snapshot() {
+  local name="$1"
+  local directory="$2"
+  shift 2
+
+  local stdout_actual="$TMP_ROOT/${name}.stdout"
+  local stderr_actual="$TMP_ROOT/${name}.stderr"
+  local status_actual="$TMP_ROOT/${name}.status"
+
+  run_cli "$stdout_actual" "$stderr_actual" "$status_actual" "$@" "$directory"
+
+  compare_file "$name stdout" "$FIXTURES_DIR/${name}.stdout" "$stdout_actual"
+  compare_file "$name stderr" "$FIXTURES_DIR/${name}.stderr" "$stderr_actual"
+  compare_file "$name status" "$FIXTURES_DIR/${name}.status" "$status_actual"
+}
+
+assert_jobs_consistent() {
+  local directory="$1"
+  local seq_stdout="$TMP_ROOT/jobs-seq.stdout"
+  local seq_stderr="$TMP_ROOT/jobs-seq.stderr"
+  local seq_status="$TMP_ROOT/jobs-seq.status"
+  local par_stdout="$TMP_ROOT/jobs-par.stdout"
+  local par_stderr="$TMP_ROOT/jobs-par.stderr"
+  local par_status="$TMP_ROOT/jobs-par.status"
+
+  run_cli "$seq_stdout" "$seq_stderr" "$seq_status" --jobs 1 "$directory"
+  run_cli "$par_stdout" "$par_stderr" "$par_status" "$directory"
+
+  compare_file "jobs stdout" "$seq_stdout" "$par_stdout"
+  compare_file "jobs stderr" "$seq_stderr" "$par_stderr"
+  compare_file "jobs status" "$seq_status" "$par_status"
+}
+
+main() {
+  trap cleanup EXIT
+
+  [ -x "$CLI" ] || fail "repohealth is not executable: $CLI"
+  [ -d "$FIXTURES_DIR" ] || fail "fixtures directory is missing: $FIXTURES_DIR"
+
+  TMP_ROOT="$(make_temp_dir)"
+
+  local workspace
+  workspace="$(build_workspace)"
+
+  mkdir -p "$TMP_ROOT/empty"
+
+  assert_snapshot "empty" "$TMP_ROOT/empty" --jobs 1
+  assert_snapshot "default" "$workspace" --jobs 1
+  assert_snapshot "dirty" "$workspace" --jobs 1 --dirty
+  assert_snapshot "detail" "$workspace/ahead-dirty" --jobs 1 --detail
+  assert_jobs_consistent "$workspace"
+
+  printf 'All snapshot tests passed.\n'
+}
+
+main "$@"

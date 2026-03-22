@@ -1,0 +1,7 @@
+ahead-dirty     [git]  ↑ 1 outgoing  |  * 1 modified, 1 untracked
+clean-upstream  [git]  - up to date    |  - clean                  
+no-remote       [git]  ? no remote     |  - clean                  
+
+---------------------------------
+scanned: 3  outgoing: 1  dirty: 1
+---------------------------------

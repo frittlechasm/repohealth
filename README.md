@@ -45,6 +45,7 @@ If `directory` is omitted, the current directory is scanned.
 - `--remote NAME` overrides the remote used for Jujutsu push checks.
 - `--jobs N` limits parallel repo-state workers. Use `--jobs 1` for sequential collection.
 - `--detail` prints expanded per-repo sections.
+- `--fancy` enables experimental enhanced rendering.
 - `-h`, `--help` shows the help text.
 
 ## Examples

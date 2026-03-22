@@ -1,0 +1,1021 @@
+#!/usr/bin/env bash
+
+set -u
+
+PROGRAM_NAME="${0##*/}"
+
+DIRTY_ONLY=0
+MAX_DEPTH=""
+NO_COLOR_FLAG=0
+CHECK_MODE=0
+DETAIL_MODE=0
+REMOTE_OVERRIDE=""
+SCAN_ROOT="."
+SCAN_ROOT_CANON=""
+
+HAVE_GIT=0
+HAVE_JJ=0
+ENABLE_COLOR=0
+
+REPO_ROOTS=()
+REPO_TYPES=()
+
+REPO_PUSH_KIND=()
+REPO_PUSH_PLAIN=()
+REPO_PUSH_NOTE=()
+REPO_PUSH_DETAIL=()
+
+REPO_WORK_KIND=()
+REPO_WORK_PLAIN=()
+REPO_WORK_NOTE=()
+REPO_WORK_DETAIL=()
+REPO_UNTRACKED_DETAIL=()
+REPO_DRAFT_DETAIL=()
+
+usage() {
+  cat <<EOF
+Usage: $PROGRAM_NAME [options] [directory]
+
+Scan nested Git and Jujutsu repos and report outgoing commits plus working-copy changes.
+
+Options:
+  --dirty           Show only repos with non-clean push or working-copy status
+  --depth N         Limit traversal depth
+  --no-color        Disable colored output
+  --check           Exit non-zero when any repo needs attention
+  --remote NAME     Override the remote used for JJ push checks
+  --detail          Show per-repo detailed sections
+  -h, --help        Show this help text
+EOF
+}
+
+die() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+warn() {
+  echo "Warning: $*" >&2
+}
+
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+canonicalize_dir() {
+  local path="$1"
+  if command_exists realpath; then
+    realpath "$path"
+  else
+    (
+      cd "$path" 2>/dev/null && pwd -P
+    )
+  fi
+}
+
+display_path() {
+  local path="$1"
+  if [ -n "$SCAN_ROOT_CANON" ]; then
+    case "$path" in
+    "$SCAN_ROOT_CANON")
+      printf '.'
+      return
+      ;;
+    "$SCAN_ROOT_CANON"/*)
+      printf '%s' "${path#"$SCAN_ROOT_CANON"/}"
+      return
+      ;;
+    esac
+  fi
+  if [ -n "${HOME:-}" ]; then
+    case "$path" in
+    "$HOME")
+      printf '~'
+      return
+      ;;
+    "$HOME"/*)
+      printf '~/%s' "${path#"$HOME"/}"
+      return
+      ;;
+    esac
+  fi
+  printf '%s' "$path"
+}
+
+is_integer() {
+  case "$1" in
+  '' | *[!0-9]*)
+    return 1
+    ;;
+  *)
+    return 0
+    ;;
+  esac
+}
+
+status_color() {
+  local kind="$1"
+  case "$kind" in
+  clean)
+    printf '\033[32m'
+    ;;
+  outgoing)
+    printf '\033[36m'
+    ;;
+  changes | draft | behind | diverged)
+    printf '\033[33m'
+    ;;
+  question)
+    printf '\033[2m'
+    ;;
+  push_failed | error | unavailable)
+    printf '\033[31m'
+    ;;
+  *)
+    printf ''
+    ;;
+  esac
+}
+
+colorize_status() {
+  local kind="$1"
+  local text="$2"
+  local color
+  if [ "$ENABLE_COLOR" -ne 1 ]; then
+    printf '%s' "$text"
+    return
+  fi
+  color="$(status_color "$kind")"
+  if [ -z "$color" ]; then
+    printf '%s' "$text"
+  else
+    printf '%b%s%b' "$color" "$text" '\033[0m'
+  fi
+}
+
+trim_trailing_newlines() {
+  local value="$1"
+  while [ "${value%$'\n'}" != "$value" ]; do
+    value="${value%$'\n'}"
+  done
+  printf '%s' "$value"
+}
+
+first_nonempty_line() {
+  printf '%s\n' "$1" | awk 'NF { print; exit }'
+}
+
+count_nonempty_lines() {
+  printf '%s\n' "$1" | awk 'NF { count++ } END { print count + 0 }'
+}
+
+contains_line() {
+  local haystack="$1"
+  local needle="$2"
+  printf '%s\n' "$haystack" | grep -F "$needle" >/dev/null 2>&1
+}
+
+find_repo_index() {
+  local root="$1"
+  local i
+  for ((i = 0; i < ${#REPO_ROOTS[@]}; i++)); do
+    if [ "${REPO_ROOTS[$i]}" = "$root" ]; then
+      printf '%s' "$i"
+      return 0
+    fi
+  done
+  return 1
+}
+
+init_repo_slot() {
+  REPO_PUSH_KIND+=("")
+  REPO_PUSH_PLAIN+=("")
+  REPO_PUSH_NOTE+=("")
+  REPO_PUSH_DETAIL+=("")
+  REPO_WORK_KIND+=("")
+  REPO_WORK_PLAIN+=("")
+  REPO_WORK_NOTE+=("")
+  REPO_WORK_DETAIL+=("")
+  REPO_UNTRACKED_DETAIL+=("")
+  REPO_DRAFT_DETAIL+=("")
+}
+
+add_repo() {
+  local root="$1"
+  local type="$2"
+  local idx
+  if idx="$(find_repo_index "$root")"; then
+    if [ "${REPO_TYPES[$idx]}" = "git" ] && [ "$type" = "jj" ]; then
+      REPO_TYPES[$idx]="jj"
+    fi
+    return
+  fi
+
+  REPO_ROOTS+=("$root")
+  REPO_TYPES+=("$type")
+  init_repo_slot
+}
+
+is_linked_worktree_gitfile() {
+  local gitfile="$1"
+  local first_line
+  IFS= read -r first_line <"$gitfile" || return 1
+  case "$first_line" in
+  gitdir:\ *"/worktrees/"*)
+    return 0
+    ;;
+  *)
+    return 1
+    ;;
+  esac
+}
+
+discover_repos() {
+  local find_cmd
+  find_cmd=(find "$SCAN_ROOT")
+  if [ -n "$MAX_DEPTH" ]; then
+    find_cmd+=(-maxdepth "$MAX_DEPTH")
+  fi
+  find_cmd+=(
+    "("
+    -type d
+    "("
+    -name node_modules -o
+    -name vendor -o
+    -name bower_components -o
+    -name target -o
+    -name __pycache__ -o
+    -name .svn -o
+    -name .hg
+    ")"
+    -prune
+    ")"
+    -o
+    "("
+    -type d
+    "("
+    -name .git -o
+    -name .jj
+    ")"
+    -print0
+    -prune
+    ")"
+    -o
+    "("
+    -type f
+    -name .git
+    -print0
+    ")"
+  )
+
+  local marker candidate type normalized_root
+  while IFS= read -r -d '' marker; do
+    type="git"
+    candidate="$(dirname "$marker")"
+    if [ "$(basename "$marker")" = ".jj" ]; then
+      type="jj"
+    elif [ -f "$marker" ] && is_linked_worktree_gitfile "$marker"; then
+      warn "Skipping linked worktree at $candidate"
+      continue
+    fi
+
+    if [ "$type" = "jj" ] && [ "$HAVE_JJ" -eq 1 ]; then
+      normalized_root="$(jj -R "$candidate" root 2>/dev/null || true)"
+      if [ -z "$normalized_root" ]; then
+        normalized_root="$candidate"
+      fi
+    elif [ "$type" = "git" ] && [ "$HAVE_GIT" -eq 1 ]; then
+      normalized_root="$(git -C "$candidate" rev-parse --show-toplevel 2>/dev/null || true)"
+      if [ -z "$normalized_root" ]; then
+        normalized_root="$candidate"
+      fi
+    else
+      normalized_root="$candidate"
+    fi
+
+    normalized_root="$(canonicalize_dir "$normalized_root" 2>/dev/null || true)"
+    if [ -z "$normalized_root" ]; then
+      normalized_root="$candidate"
+    fi
+
+    add_repo "$normalized_root" "$type"
+  done < <("${find_cmd[@]}")
+}
+
+set_push_status() {
+  local idx="$1"
+  local kind="$2"
+  local text="$3"
+  local note="${4:-}"
+  local detail="${5:-}"
+  REPO_PUSH_KIND[$idx]="$kind"
+  REPO_PUSH_PLAIN[$idx]="$text"
+  REPO_PUSH_NOTE[$idx]="$note"
+  REPO_PUSH_DETAIL[$idx]="$detail"
+}
+
+set_work_status() {
+  local idx="$1"
+  local kind="$2"
+  local text="$3"
+  local note="${4:-}"
+  local detail="${5:-}"
+  local untracked="${6:-}"
+  REPO_WORK_KIND[$idx]="$kind"
+  REPO_WORK_PLAIN[$idx]="$text"
+  REPO_WORK_NOTE[$idx]="$note"
+  REPO_WORK_DETAIL[$idx]="$detail"
+  REPO_UNTRACKED_DETAIL[$idx]="$untracked"
+}
+
+set_draft_detail() {
+  local idx="$1"
+  local detail="$2"
+  REPO_DRAFT_DETAIL[$idx]="$detail"
+}
+
+is_repo_clean() {
+  local idx="$1"
+  [ "${REPO_PUSH_KIND[$idx]}" = "clean" ] && [ "${REPO_WORK_KIND[$idx]}" = "clean" ]
+}
+
+join_counts() {
+  local modified="$1"
+  local untracked="$2"
+  if [ "$modified" -gt 0 ] && [ "$untracked" -gt 0 ]; then
+    printf '* %s modified, %s untracked' "$modified" "$untracked"
+  elif [ "$modified" -gt 0 ]; then
+    printf '* %s modified' "$modified"
+  elif [ "$untracked" -gt 0 ]; then
+    printf '* %s untracked' "$untracked"
+  else
+    printf -- '- clean'
+  fi
+}
+
+sanitize_stat_block() {
+  local block="$1"
+  block="$(trim_trailing_newlines "$block")"
+  if [ -z "$block" ]; then
+    return
+  fi
+  if printf '%s\n' "$block" | grep -Eq '^0 files changed, 0 insertions\(\+\), 0 deletions\(-\)$'; then
+    return
+  fi
+  printf '%s' "$block"
+}
+
+collect_git_work_state() {
+  local idx="$1"
+  local root="$2"
+  local porcelain
+  if ! porcelain="$(git -C "$root" status --porcelain=v1 --untracked-files=normal 2>&1)"; then
+    warn "Git working-copy check failed for $root: $(first_nonempty_line "$porcelain")"
+    set_work_status "$idx" "error" "!! scan error" "$(first_nonempty_line "$porcelain")"
+    return
+  fi
+
+  local modified=0
+  local untracked=0
+  local untracked_list=""
+  local line path
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    if [ "${line#\?\? }" != "$line" ]; then
+      untracked=$((untracked + 1))
+      path="${line#\?\? }"
+      if [ -n "$untracked_list" ]; then
+        untracked_list="${untracked_list}"$'\n'"$path"
+      else
+        untracked_list="$path"
+      fi
+    else
+      modified=$((modified + 1))
+    fi
+  done <<EOF
+$porcelain
+EOF
+
+  local display
+  display="$(join_counts "$modified" "$untracked")"
+
+  local detail=""
+  if [ "$modified" -gt 0 ]; then
+    local has_head=1
+    if ! git -C "$root" rev-parse --verify HEAD >/dev/null 2>&1; then
+      has_head=0
+    fi
+
+    if [ "$has_head" -eq 1 ]; then
+      detail="$(git -C "$root" diff HEAD --stat 2>/dev/null || true)"
+    else
+      local staged unstaged
+      staged="$(git -C "$root" diff --cached --stat --root 2>/dev/null || true)"
+      unstaged="$(git -C "$root" diff --stat 2>/dev/null || true)"
+      staged="$(sanitize_stat_block "$staged")"
+      unstaged="$(sanitize_stat_block "$unstaged")"
+      if [ -n "$staged" ] && [ -n "$unstaged" ]; then
+        detail="$staged"$'\n'"$unstaged"
+      elif [ -n "$staged" ]; then
+        detail="$staged"
+      else
+        detail="$unstaged"
+      fi
+    fi
+    detail="$(sanitize_stat_block "$detail")"
+  fi
+
+  if [ "$modified" -gt 0 ] || [ "$untracked" -gt 0 ]; then
+    set_work_status "$idx" "changes" "$display" "" "$detail" "$untracked_list"
+  else
+    set_work_status "$idx" "clean" "- clean"
+  fi
+}
+
+collect_git_push_state() {
+  local idx="$1"
+  local root="$2"
+
+  if ! git -C "$root" rev-parse --verify HEAD >/dev/null 2>&1; then
+    set_push_status "$idx" "question" "? no commits" "repository has no commits yet"
+    return
+  fi
+
+  local branch
+  branch="$(git -C "$root" symbolic-ref -q --short HEAD 2>/dev/null || true)"
+  if [ -z "$branch" ]; then
+    set_push_status "$idx" "question" "? detached HEAD" "detached HEAD — no upstream branch to compare"
+    return
+  fi
+
+  local remotes
+  remotes="$(git -C "$root" remote 2>/dev/null || true)"
+  if [ "$(count_nonempty_lines "$remotes")" -eq 0 ]; then
+    set_push_status "$idx" "question" "? no remote" "no Git remote configured"
+    return
+  fi
+
+  local upstream
+  upstream="$(git -C "$root" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+  if [ -z "$upstream" ]; then
+    set_push_status "$idx" "question" "? no upstream" "no upstream configured for branch $branch"
+    return
+  fi
+
+  local counts ahead behind
+  counts="$(git -C "$root" rev-list --left-right --count "${upstream}...HEAD" 2>/dev/null || true)"
+  if [ -z "$counts" ]; then
+    warn "Git push-state check failed for $root"
+    set_push_status "$idx" "error" "!! scan error" "failed to compare HEAD with upstream"
+    return
+  fi
+
+  behind="${counts%%[[:space:]]*}"
+  ahead="${counts##*[[:space:]]}"
+
+  local detail=""
+  if [ "$ahead" -gt 0 ]; then
+    detail="$(build_git_outgoing_detail "$root" "$upstream")"
+  fi
+
+  if [ "$ahead" -gt 0 ] && [ "$behind" -gt 0 ]; then
+    set_push_status "$idx" "diverged" "↕ ${ahead} ahead, ${behind} behind" "behind remote by ${behind} commit(s)" "$detail"
+  elif [ "$ahead" -gt 0 ]; then
+    set_push_status "$idx" "outgoing" "↑ ${ahead} outgoing" "" "$detail"
+  elif [ "$behind" -gt 0 ]; then
+    set_push_status "$idx" "behind" "↓ ${behind} behind" "behind remote — pull required"
+  else
+    set_push_status "$idx" "clean" "- up to date"
+  fi
+}
+
+build_git_outgoing_detail() {
+  local root="$1"
+  local upstream="$2"
+  local hashes hash subject stat result=""
+  hashes="$(git -C "$root" rev-list --reverse "${upstream}..HEAD" 2>/dev/null || true)"
+  while IFS= read -r hash; do
+    [ -z "$hash" ] && continue
+    subject="$(git -C "$root" log -1 --format=%s "$hash" 2>/dev/null || true)"
+    stat="$(git -C "$root" show --stat --format= "$hash" 2>/dev/null || true)"
+    stat="$(sanitize_stat_block "$stat")"
+    if [ -n "$result" ]; then
+      result="${result}"$'\n'$'\n'
+    fi
+    result="${result}${subject}"
+    if [ -n "$stat" ]; then
+      result="${result}"$'\n'"$stat"
+    fi
+  done <<EOF
+$hashes
+EOF
+  printf '%s' "$result"
+}
+
+collect_jj_drafts() {
+  local root="$1"
+  local output
+  output="$(jj -R "$root" log -r 'reachable(@, mutable()) ~ bookmarks() ~ @' --no-graph -T 'change_id.short() ++ " " ++ description.first_line() ++ "\n"' 2>/dev/null || true)"
+  output="$(trim_trailing_newlines "$output")"
+  printf '%s' "$output"
+}
+
+collect_jj_work_state() {
+  local idx="$1"
+  local root="$2"
+  local using_git="${3:-0}"
+
+  if [ "$using_git" -eq 1 ]; then
+    collect_git_work_state "$idx" "$root"
+    return
+  fi
+
+  local status_output
+  if ! status_output="$(jj -R "$root" status 2>&1)"; then
+    warn "JJ working-copy check failed for $root: $(first_nonempty_line "$status_output")"
+    set_work_status "$idx" "error" "!! scan error" "$(first_nonempty_line "$status_output")"
+    return
+  fi
+
+  if contains_line "$status_output" "The working copy has no changes."; then
+    set_work_status "$idx" "clean" "- clean"
+    return
+  fi
+
+  local modified
+  modified="$(jj -R "$root" diff --name-only 2>/dev/null | awk 'NF { count++ } END { print count + 0 }')"
+  if [ -z "$modified" ]; then
+    modified=0
+  fi
+
+  local detail
+  detail="$(jj -R "$root" diff --stat 2>/dev/null || true)"
+  detail="$(sanitize_stat_block "$detail")"
+
+  if [ "$modified" -gt 0 ]; then
+    set_work_status "$idx" "changes" "* ${modified} modified" "" "$detail"
+  else
+    set_work_status "$idx" "clean" "- clean"
+  fi
+}
+
+build_jj_outgoing_detail() {
+  local root="$1"
+  local dry_run_output="$2"
+  local result=""
+  local line action bookmark summary
+  while IFS= read -r line; do
+    case "$line" in
+    'Changes to push to '* | 'Dry-run requested, not pushing.')
+      continue
+      ;;
+    '  '*)
+      action="${line#  }"
+      bookmark="$(printf '%s\n' "$action" | sed -E 's/.* bookmark ([^ ]+).*/\1/' 2>/dev/null)"
+      if [ -n "$result" ]; then
+        result="${result}"$'\n'
+      fi
+      result="${result}${action} (stat unavailable)"
+      if [ -n "$bookmark" ] && [ "$bookmark" != "$action" ]; then
+        summary="$(jj -R "$root" log -r "$bookmark" --no-graph -T 'description.first_line() ++ "\n"' 2>/dev/null | awk 'NF { print; exit }')"
+        if [ -n "$summary" ]; then
+          result="${result}"$'\n'"target: $summary"
+        fi
+      fi
+      ;;
+    esac
+  done <<EOF
+$dry_run_output
+EOF
+  printf '%s' "$result"
+}
+
+collect_jj_push_state() {
+  local idx="$1"
+  local root="$2"
+
+  local draft_detail draft_count
+  draft_detail="$(collect_jj_drafts "$root")"
+  draft_count="$(count_nonempty_lines "$draft_detail")"
+  set_draft_detail "$idx" "$draft_detail"
+
+  local remote_output remote_count
+  remote_output="$(jj -R "$root" git remote list 2>/dev/null || true)"
+  remote_count="$(count_nonempty_lines "$remote_output")"
+  if [ "$remote_count" -eq 0 ] && [ -z "$REMOTE_OVERRIDE" ]; then
+    if [ "$draft_count" -gt 0 ]; then
+      set_push_status "$idx" "draft" "~ ${draft_count} draft only" "draft commits are not pushable until bookmarked"
+    else
+      set_push_status "$idx" "question" "? no remote" "no JJ remote configured"
+    fi
+    return
+  fi
+
+  local jj_cmd
+  jj_cmd=(jj -R "$root" git push --dry-run)
+  if [ -n "$REMOTE_OVERRIDE" ]; then
+    jj_cmd+=(--remote "$REMOTE_OVERRIDE")
+  fi
+
+  local dry_run_output status
+  if command_exists timeout; then
+    dry_run_output="$(timeout 30 "${jj_cmd[@]}" 2>&1)"
+    status=$?
+  else
+    dry_run_output="$("${jj_cmd[@]}" 2>&1)"
+    status=$?
+  fi
+
+  if [ "$status" -eq 124 ]; then
+    warn "JJ push-state check timed out for $root"
+    set_push_status "$idx" "push_failed" "! push check failed" "push check timed out after 30s"
+    return
+  fi
+
+  if [ "$status" -ne 0 ]; then
+    warn "JJ push-state check failed for $root: $(first_nonempty_line "$dry_run_output")"
+    set_push_status "$idx" "push_failed" "! push check failed" "push check failed: $(first_nonempty_line "$dry_run_output")"
+    return
+  fi
+
+  local action_count
+  action_count="$(printf '%s\n' "$dry_run_output" | awk '
+    BEGIN { in_actions = 0; count = 0 }
+    /^Changes to push to / { in_actions = 1; next }
+    /^Dry-run requested, not pushing\./ { in_actions = 0 }
+    in_actions && /^  / { count++ }
+    END { print count + 0 }
+  ')"
+
+  local detail=""
+  if [ "$action_count" -gt 0 ]; then
+    detail="$(build_jj_outgoing_detail "$root" "$dry_run_output")"
+    if [ "$draft_count" -gt 0 ]; then
+      set_push_status "$idx" "outgoing" "↑ ${action_count} outgoing (+${draft_count} draft)" "" "$detail"
+    else
+      set_push_status "$idx" "outgoing" "↑ ${action_count} outgoing" "" "$detail"
+    fi
+    return
+  fi
+
+  if contains_line "$dry_run_output" "Refusing to create new remote bookmark"; then
+    set_push_status "$idx" "question" "? no tracked bookmarks" "local bookmarks are not tracked on the selected remote"
+    return
+  fi
+
+  if [ "$draft_count" -gt 0 ]; then
+    set_push_status "$idx" "draft" "~ ${draft_count} draft only" "draft commits are not pushable until bookmarked"
+    return
+  fi
+
+  set_push_status "$idx" "clean" "- up to date"
+}
+
+collect_repo_state() {
+  local idx="$1"
+  local root="${REPO_ROOTS[$idx]}"
+  local type="${REPO_TYPES[$idx]}"
+  local has_git_checkout=0
+
+  if [ "$type" = "git" ]; then
+    if [ "$HAVE_GIT" -ne 1 ]; then
+      set_push_status "$idx" "unavailable" "!! git unavailable" "git is not installed"
+      set_work_status "$idx" "unavailable" "!! git unavailable" "git is not installed"
+      return
+    fi
+
+    collect_git_push_state "$idx" "$root"
+    collect_git_work_state "$idx" "$root"
+    return
+  fi
+
+  if [ "$HAVE_JJ" -ne 1 ]; then
+    set_push_status "$idx" "unavailable" "!! jj unavailable" "jj is not installed"
+    set_work_status "$idx" "unavailable" "!! jj unavailable" "jj is not installed"
+    return
+  fi
+
+  if [ -e "$root/.git" ]; then
+    has_git_checkout=1
+  fi
+
+  collect_jj_push_state "$idx" "$root"
+  if [ "$has_git_checkout" -eq 1 ] && [ "$HAVE_GIT" -eq 1 ]; then
+    collect_jj_work_state "$idx" "$root" 1
+  else
+    collect_jj_work_state "$idx" "$root" 0
+  fi
+}
+
+repo_error_count() {
+  local idx="$1"
+  case "${REPO_PUSH_KIND[$idx]}:${REPO_WORK_KIND[$idx]}" in
+  *error* | *unavailable*)
+    printf '1'
+    ;;
+  *)
+    printf '0'
+    ;;
+  esac
+}
+
+should_show_repo() {
+  local idx="$1"
+  if [ "$DIRTY_ONLY" -eq 0 ]; then
+    return 0
+  fi
+  if is_repo_clean "$idx"; then
+    return 1
+  fi
+  return 0
+}
+
+print_default_view() {
+  local shown_indices=()
+  local i label max_label=0 max_push=0 max_work=0
+  local label_plain push_plain work_plain
+  for ((i = 0; i < ${#REPO_ROOTS[@]}; i++)); do
+    if ! should_show_repo "$i"; then
+      continue
+    fi
+    shown_indices+=("$i")
+    label_plain="$(display_path "${REPO_ROOTS[$i]}")  [${REPO_TYPES[$i]}]"
+    push_plain="${REPO_PUSH_PLAIN[$i]}"
+    work_plain="${REPO_WORK_PLAIN[$i]}"
+    if [ "${#label_plain}" -gt "$max_label" ]; then
+      max_label="${#label_plain}"
+    fi
+    if [ "${#push_plain}" -gt "$max_push" ]; then
+      max_push="${#push_plain}"
+    fi
+    if [ "${#work_plain}" -gt "$max_work" ]; then
+      max_work="${#work_plain}"
+    fi
+  done
+
+  local padded_label padded_push padded_work
+  for i in "${shown_indices[@]}"; do
+    label_plain="$(display_path "${REPO_ROOTS[$i]}")  [${REPO_TYPES[$i]}]"
+    push_plain="${REPO_PUSH_PLAIN[$i]}"
+    work_plain="${REPO_WORK_PLAIN[$i]}"
+    printf -v padded_label "%-${max_label}s" "$label_plain"
+    printf -v padded_push "%-${max_push}s" "$push_plain"
+    printf -v padded_work "%-${max_work}s" "$work_plain"
+    printf '%s  %s  |  %s\n' \
+      "$padded_label" \
+      "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
+      "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
+  done
+}
+
+print_multiline_block() {
+  local block="$1"
+  local line
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    printf '  %s\n' "$line"
+  done <<EOF
+$block
+EOF
+}
+
+print_detail_view() {
+  local shown_indices=()
+  local i label max_label=0 max_push=0 max_work=0
+  local label_plain push_plain work_plain
+  for ((i = 0; i < ${#REPO_ROOTS[@]}; i++)); do
+    if ! should_show_repo "$i"; then
+      continue
+    fi
+    shown_indices+=("$i")
+    label_plain="$(display_path "${REPO_ROOTS[$i]}")  [${REPO_TYPES[$i]}]"
+    push_plain="${REPO_PUSH_PLAIN[$i]}"
+    work_plain="${REPO_WORK_PLAIN[$i]}"
+    if [ "${#label_plain}" -gt "$max_label" ]; then
+      max_label="${#label_plain}"
+    fi
+    if [ "${#push_plain}" -gt "$max_push" ]; then
+      max_push="${#push_plain}"
+    fi
+    if [ "${#work_plain}" -gt "$max_work" ]; then
+      max_work="${#work_plain}"
+    fi
+  done
+
+  local first=1
+  local push_kind work_kind
+  local header_visible header_width divider
+  for i in "${shown_indices[@]}"; do
+    [ "$first" -eq 1 ] || printf '\n'
+    first=0
+    label_plain="$(display_path "${REPO_ROOTS[$i]}")  [${REPO_TYPES[$i]}]"
+    push_plain="${REPO_PUSH_PLAIN[$i]}"
+    work_plain="${REPO_WORK_PLAIN[$i]}"
+    printf -v padded_push "%-${max_push}s" "$push_plain"
+    printf -v padded_work "%-${max_work}s" "$work_plain"
+    header_visible="[ ${label_plain} ]  ${padded_push}  |  ${padded_work}"
+    printf '[ %s ]  %s  |  %s\n' \
+      "$label_plain" \
+      "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
+      "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
+    header_width=${#header_visible}
+    divider=""
+    while [ "${#divider}" -lt "$header_width" ]; do
+      divider="${divider}-"
+    done
+    printf '%s\n' "$divider"
+
+    push_kind="${REPO_PUSH_KIND[$i]}"
+    work_kind="${REPO_WORK_KIND[$i]}"
+
+    if [ -n "${REPO_PUSH_DETAIL[$i]}" ]; then
+      local outgoing_count
+      outgoing_count="$(printf '%s' "${REPO_PUSH_PLAIN[$i]}" | awk '{print $2}')"
+      printf 'Outgoing changes (%s):\n' "$outgoing_count"
+      print_multiline_block "${REPO_PUSH_DETAIL[$i]}"
+      if [ "$push_kind" = "diverged" ] && [ -n "${REPO_PUSH_NOTE[$i]}" ]; then
+        printf '  Note: %s\n' "${REPO_PUSH_NOTE[$i]}"
+      fi
+    elif [ -n "${REPO_PUSH_NOTE[$i]}" ]; then
+      printf '  %s\n' "${REPO_PUSH_NOTE[$i]}"
+    fi
+
+    if [ -n "${REPO_DRAFT_DETAIL[$i]}" ]; then
+      printf 'JJ unbookmarked commits:\n'
+      print_multiline_block "${REPO_DRAFT_DETAIL[$i]}"
+      printf '  not pushable until bookmarked\n'
+    fi
+
+    if [ -n "${REPO_WORK_DETAIL[$i]}" ]; then
+      printf 'Working copy changes:\n'
+      print_multiline_block "${REPO_WORK_DETAIL[$i]}"
+    fi
+
+    if [ -n "${REPO_UNTRACKED_DETAIL[$i]}" ]; then
+      printf 'Untracked files:\n'
+      print_multiline_block "${REPO_UNTRACKED_DETAIL[$i]}"
+    fi
+
+    if [ "$work_kind" = "error" ] || [ "$work_kind" = "unavailable" ]; then
+      if [ -n "${REPO_WORK_NOTE[$i]}" ]; then
+        printf '  Working copy: %s\n' "${REPO_WORK_NOTE[$i]}"
+      fi
+    fi
+  done
+}
+
+print_summary() {
+  local repo_count="${#REPO_ROOTS[@]}"
+  local outgoing=0
+  local local_changes=0
+  local errors=0
+  local i
+  for ((i = 0; i < repo_count; i++)); do
+    case "${REPO_PUSH_KIND[$i]}" in
+    outgoing | diverged)
+      outgoing=$((outgoing + 1))
+      ;;
+    esac
+    case "${REPO_WORK_KIND[$i]}" in
+    changes)
+      local_changes=$((local_changes + 1))
+      ;;
+    esac
+    if [ "$(repo_error_count "$i")" -eq 1 ]; then
+      errors=$((errors + 1))
+    fi
+  done
+
+  local line="scanned: ${repo_count}  outgoing: ${outgoing}  dirty: ${local_changes}"
+  if [ "$errors" -gt 0 ]; then
+    line="${line}  errors: ${errors}"
+  fi
+  local divider=""
+  while [ "${#divider}" -lt "${#line}" ]; do
+    divider="${divider}-"
+  done
+  printf '\n%s\n%s\n%s\n' "$divider" "$line" "$divider"
+}
+
+check_exit_status() {
+  local i
+  if [ "$CHECK_MODE" -ne 1 ]; then
+    return 0
+  fi
+  for ((i = 0; i < ${#REPO_ROOTS[@]}; i++)); do
+    case "${REPO_PUSH_KIND[$i]}" in
+    outgoing | behind | diverged | question | draft | push_failed | error | unavailable)
+      return 1
+      ;;
+    esac
+    case "${REPO_WORK_KIND[$i]}" in
+    changes | error | unavailable)
+      return 1
+      ;;
+    esac
+  done
+  return 0
+}
+
+parse_args() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+    --dirty)
+      DIRTY_ONLY=1
+      ;;
+    --depth)
+      [ "$#" -ge 2 ] || die "--depth requires a value"
+      MAX_DEPTH="$2"
+      is_integer "$MAX_DEPTH" || die "--depth requires a non-negative integer"
+      shift
+      ;;
+    --no-color)
+      NO_COLOR_FLAG=1
+      ;;
+    --check)
+      CHECK_MODE=1
+      ;;
+    --remote)
+      [ "$#" -ge 2 ] || die "--remote requires a value"
+      REMOTE_OVERRIDE="$2"
+      shift
+      ;;
+    --detail)
+      DETAIL_MODE=1
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      die "unknown option: $1"
+      ;;
+    *)
+      if [ "$SCAN_ROOT" != "." ]; then
+        die "only one directory argument is supported"
+      fi
+      SCAN_ROOT="$1"
+      ;;
+    esac
+    shift
+  done
+
+  if [ "$#" -gt 0 ]; then
+    if [ "$SCAN_ROOT" != "." ]; then
+      die "only one directory argument is supported"
+    fi
+    SCAN_ROOT="$1"
+    shift
+  fi
+  [ "$#" -eq 0 ] || die "unexpected extra arguments"
+}
+
+main() {
+  parse_args "$@"
+
+  [ -d "$SCAN_ROOT" ] || die "directory does not exist: $SCAN_ROOT"
+  SCAN_ROOT_CANON="$(canonicalize_dir "$SCAN_ROOT" 2>/dev/null || true)"
+  if [ -z "$SCAN_ROOT_CANON" ]; then
+    die "failed to resolve scan root: $SCAN_ROOT"
+  fi
+  SCAN_ROOT="$SCAN_ROOT_CANON"
+
+  if command_exists git; then
+    HAVE_GIT=1
+  fi
+  if command_exists jj; then
+    HAVE_JJ=1
+  fi
+  if [ "$HAVE_GIT" -eq 0 ] && [ "$HAVE_JJ" -eq 0 ]; then
+    die "neither git nor jj is available"
+  fi
+
+  if [ "$NO_COLOR_FLAG" -eq 0 ] && [ -z "${NO_COLOR:-}" ] && [ -t 1 ]; then
+    ENABLE_COLOR=1
+  fi
+
+  discover_repos
+
+  local i
+  for ((i = 0; i < ${#REPO_ROOTS[@]}; i++)); do
+    collect_repo_state "$i"
+  done
+
+  if [ "$DETAIL_MODE" -eq 1 ]; then
+    print_detail_view
+  else
+    print_default_view
+  fi
+  print_summary
+
+  if check_exit_status; then
+    exit 0
+  fi
+  exit 1
+}
+
+main "$@"

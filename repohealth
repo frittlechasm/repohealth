@@ -18,6 +18,7 @@ STATE_TMP_DIR=""
 HAVE_GIT=0
 HAVE_JJ=0
 ENABLE_COLOR=0
+TERM_COLS_CACHE=""
 
 REPO_ROOTS=()
 REPO_TYPES=()
@@ -402,16 +403,310 @@ join_counts() {
   fi
 }
 
-sanitize_stat_block() {
+terminal_columns() {
+  [ -n "$TERM_COLS_CACHE" ] && { printf '%s' "$TERM_COLS_CACHE"; return; }
+  local columns="${COLUMNS:-}"
+  if is_integer "$columns" && [ "$columns" -ge 40 ]; then
+    TERM_COLS_CACHE="$columns"
+  else
+    TERM_COLS_CACHE="80"
+  fi
+  printf '%s' "$TERM_COLS_CACHE"
+}
+
+truncate_middle() {
+  local text="$1"
+  local max_width="$2"
+  local text_length left_width right_width right_start
+
+  text_length=${#text}
+  if [ "$text_length" -le "$max_width" ]; then
+    printf '%s' "$text"
+    return
+  fi
+
+  if [ "$max_width" -le 3 ]; then
+    printf '%s' "${text:0:max_width}"
+    return
+  fi
+
+  left_width=$(((max_width - 3) / 2))
+  right_width=$((max_width - 3 - left_width))
+  right_start=$((text_length - right_width))
+
+  printf '%s...%s' "${text:0:left_width}" "${text:right_start}"
+}
+
+repeat_char() {
+  local char="$1"
+  local count="$2"
+  [ "$count" -le 0 ] 2>/dev/null && return
+  printf '%*s' "$count" '' | tr ' ' "$char"
+}
+
+make_diff_bar() {
+  local add_chars="$1"
+  local remove_chars="$2"
+  local add_s remove_s
+  add_s="$(repeat_char '+' "$add_chars")"
+  remove_s="$(repeat_char '-' "$remove_chars")"
+  if [ "$ENABLE_COLOR" -eq 1 ]; then
+    if [ -n "$add_s" ]; then
+      printf '\033[32m%s\033[0m' "$add_s"
+    fi
+    if [ -n "$remove_s" ]; then
+      printf '\033[31m%s\033[0m' "$remove_s"
+    fi
+  else
+    printf '%s%s' "$add_s" "$remove_s"
+  fi
+}
+
+ltrim_spaces() {
+  local v="$1"
+  while [ -n "$v" ] && [ "${v# }" != "$v" ]; do v="${v# }"; done
+  printf '%s' "$v"
+}
+
+tsv_max_total() {
   local block="$1"
+  local max=0 added removed path t
+  block="$(trim_trailing_newlines "$block")"
+  [ -n "$block" ] || { printf '0'; return; }
+  while IFS=$'\t' read -r added removed path; do
+    [ -n "$added$removed$path" ] || continue
+    added="$(ltrim_spaces "$added")"
+    removed="$(ltrim_spaces "$removed")"
+    if [ "$added" != "-" ] && [ "$removed" != "-" ]; then
+      t=$((added + removed))
+      if [ "$t" -gt "$max" ]; then max="$t"; fi
+    fi
+  done <<EOF
+$block
+EOF
+  printf '%s' "$max"
+}
+
+format_compact_stat_tsv() {
+  local block="$1"
+  local indent="${2:-7}"
+  local forced_max_total="${3:-0}"
+  local added removed path total
+  local count=0 total_added=0 total_removed=0 binary_count=0
+  local max_total=0 columns available_width path_width count_width bar_width i
+  local paths=() added_list=() removed_list=() is_binary=()
+  local result=""
+  local file_word="files"
+
   block="$(trim_trailing_newlines "$block")"
   if [ -z "$block" ]; then
     return
   fi
-  if printf '%s\n' "$block" | grep -Eq '^0 files changed, 0 insertions\(\+\), 0 deletions\(-\)$'; then
+
+  while IFS=$'\t' read -r added removed path; do
+    [ -n "$added$removed$path" ] || continue
+
+    added="$(ltrim_spaces "$added")"
+    removed="$(ltrim_spaces "$removed")"
+
+    count=$((count + 1))
+    if [ "$added" = "-" ] || [ "$removed" = "-" ]; then
+      paths+=("$path")
+      added_list+=(0)
+      removed_list+=(0)
+      is_binary+=(1)
+      binary_count=$((binary_count + 1))
+    else
+      total=$((added + removed))
+      paths+=("$path")
+      added_list+=("$added")
+      removed_list+=("$removed")
+      is_binary+=(0)
+      total_added=$((total_added + added))
+      total_removed=$((total_removed + removed))
+      if [ "$total" -gt "$max_total" ]; then
+        max_total="$total"
+      fi
+    fi
+  done <<EOF
+$block
+EOF
+
+  if [ "$count" -eq 0 ]; then
     return
   fi
-  printf '%s' "$block"
+
+  # local_max_total is used for bar scaling (per-block proportions)
+  # max_total may be inflated by forced_max_total for consistent column layout
+  local local_max_total="$max_total"
+  if [ "$forced_max_total" -gt "$max_total" ]; then
+    max_total="$forced_max_total"
+  fi
+
+  columns="$(terminal_columns)"
+  available_width=$((columns - indent))
+  if [ "$available_width" -lt 20 ]; then
+    available_width=20
+  fi
+
+  if [ "$max_total" -gt 0 ]; then
+    count_width=${#max_total}
+  else
+    count_width=1
+  fi
+
+  bar_width=$((available_width / 4))
+  if [ "$bar_width" -lt 8 ]; then bar_width=8; fi
+  if [ "$bar_width" -gt 25 ]; then bar_width=25; fi
+
+  # path | count_width bar_width  (with " | " and " " separators)
+  path_width=$((available_width - 3 - count_width - 1 - bar_width))
+  if [ "$path_width" -lt 12 ]; then
+    path_width=12
+    bar_width=$((available_width - path_width - 3 - count_width - 1))
+    if [ "$bar_width" -lt 0 ]; then bar_width=0; fi
+  fi
+
+  local line display_path a r t bar_total add_chars remove_chars bar_str count_str
+  for ((i = 0; i < count; i++)); do
+    display_path="$(truncate_middle "${paths[$i]}" "$path_width")"
+    if [ "${is_binary[$i]}" -eq 1 ]; then
+      printf -v line "%-${path_width}s | Bin" "$display_path"
+    else
+      a="${added_list[$i]}"
+      r="${removed_list[$i]}"
+      t=$((a + r))
+      add_chars=0
+      remove_chars=0
+      if [ "$local_max_total" -gt 0 ] && [ "$bar_width" -gt 0 ]; then
+        bar_total=$(( (t * bar_width + local_max_total / 2) / local_max_total ))
+        if [ "$bar_total" -lt 1 ] && [ "$t" -gt 0 ]; then bar_total=1; fi
+        if [ "$t" -gt 0 ]; then
+          add_chars=$(( (a * bar_total + t / 2) / t ))
+          remove_chars=$((bar_total - add_chars))
+        fi
+      fi
+      bar_str="$(make_diff_bar "$add_chars" "$remove_chars")"
+      printf -v count_str "%${count_width}d" "$t"
+      printf -v line "%-${path_width}s | %s " "$display_path" "$count_str"
+      line="${line}${bar_str}"
+    fi
+    if [ -n "$result" ]; then
+      result="${result}"$'\n'
+    fi
+    result="${result}${line}"
+  done
+
+  if [ "$count" -eq 1 ]; then
+    file_word="file"
+  fi
+
+  local total_label="total: ${count} ${file_word}"
+  local total_count=$((total_added + total_removed))
+  local total_count_str breakdown summary
+  printf -v total_count_str "%${count_width}d" "$total_count"
+  breakdown="+${total_added}/-${total_removed}"
+  if [ "$binary_count" -gt 0 ]; then
+    breakdown="${breakdown}, ${binary_count} binary"
+  fi
+  printf -v summary "%-${path_width}s | %s  %s" "$total_label" "$total_count_str" "$breakdown"
+
+  printf '%s\n%s' "$result" "$summary"
+}
+
+collect_git_unborn_worktree_numstat() {
+  local root="$1"
+  local tmp_dir="" tmp_index=""
+  local detail=""
+
+  tmp_dir="$(make_temp_dir)" || {
+    printf '%s' "$(git -C "$root" diff --cached --numstat --root 2>/dev/null || true)"
+    return
+  }
+
+  tmp_index="$tmp_dir/index"
+  : >"$tmp_index"
+
+  if GIT_INDEX_FILE="$tmp_index" git -C "$root" add -A -- . >/dev/null 2>&1; then
+    detail="$(GIT_INDEX_FILE="$tmp_index" git -C "$root" diff --cached --numstat --root 2>/dev/null || true)"
+  else
+    detail="$(git -C "$root" diff --cached --numstat --root 2>/dev/null || true)"
+  fi
+
+  rm -rf "$tmp_dir"
+  printf '%s' "$detail"
+}
+
+collect_jj_stat_tsv() {
+  local root="$1"
+  local revset="$2"
+  jj -R "$root" log -r "$revset" --no-graph -T 'diff.stat().files().map(|f| f.lines_added() ++ "\t" ++ f.lines_removed() ++ "\t" ++ f.display_diff_path() ++ "\n")' 2>/dev/null || true
+}
+
+build_jj_commit_detail() {
+  local root="$1"
+  local revset="$2"
+  local raw line current_title current_stats result=""
+  local tab=$'\t'
+  local commit_titles=() commit_stats_list=()
+
+  raw="$(jj -R "$root" log -r "$revset" --reversed --no-graph -T '"__COMMIT__\t" ++ commit_id.short() ++ "\t" ++ description.first_line() ++ "\n" ++ diff.stat().files().map(|f| f.lines_added() ++ "\t" ++ f.lines_removed() ++ "\t" ++ f.display_diff_path() ++ "\n") ++ "__END__\n"' 2>/dev/null || true)"
+  raw="$(trim_trailing_newlines "$raw")"
+  if [ -z "$raw" ]; then
+    return
+  fi
+
+  # Pass 1: collect (title, raw_tsv) pairs
+  current_title=""
+  current_stats=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if [ "$line" = "__END__" ]; then
+      if [ -n "$current_title" ]; then
+        commit_titles+=("$current_title")
+        commit_stats_list+=("$current_stats")
+      fi
+      current_title=""
+      current_stats=""
+    elif [ "${line%%"$tab"*}" = "__COMMIT__" ]; then
+      line="${line#__COMMIT__"$tab"}"
+      current_title="${line%%"$tab"*}"
+      if [ "$line" != "${line#*"$tab"}" ]; then
+        line="${line#*"$tab"}"
+        if [ -n "$line" ]; then
+          current_title="${current_title} ${line}"
+        fi
+      fi
+      current_stats=""
+    else
+      if [ -n "$current_stats" ]; then
+        current_stats="${current_stats}"$'\n'"$line"
+      else
+        current_stats="$line"
+      fi
+    fi
+  done <<EOF
+$raw
+EOF
+
+  if [ "${#commit_titles[@]}" -eq 0 ]; then
+    return
+  fi
+
+  # Serialize as __C__\t{title}\n{tsv}\n__E__ — formatting is deferred to render time
+  local i
+  for ((i = 0; i < ${#commit_titles[@]}; i++)); do
+    if [ -n "$result" ]; then
+      result="${result}"$'\n'
+    fi
+    result="${result}__C__${tab}${commit_titles[$i]}"
+    if [ -n "${commit_stats_list[$i]}" ]; then
+      result="${result}"$'\n'"${commit_stats_list[$i]}"
+    fi
+    result="${result}"$'\n'"__E__"
+  done
+
+  printf '%s' "$result"
 }
 
 collect_git_work_state() {
@@ -456,22 +751,10 @@ EOF
     fi
 
     if [ "$has_head" -eq 1 ]; then
-      detail="$(git -C "$root" diff HEAD --stat 2>/dev/null || true)"
+      detail="$(git -C "$root" diff HEAD --numstat 2>/dev/null || true)"
     else
-      local staged unstaged
-      staged="$(git -C "$root" diff --cached --stat --root 2>/dev/null || true)"
-      unstaged="$(git -C "$root" diff --stat 2>/dev/null || true)"
-      staged="$(sanitize_stat_block "$staged")"
-      unstaged="$(sanitize_stat_block "$unstaged")"
-      if [ -n "$staged" ] && [ -n "$unstaged" ]; then
-        detail="$staged"$'\n'"$unstaged"
-      elif [ -n "$staged" ]; then
-        detail="$staged"
-      else
-        detail="$unstaged"
-      fi
+      detail="$(collect_git_unborn_worktree_numstat "$root")"
     fi
-    detail="$(sanitize_stat_block "$detail")"
   fi
 
   if [ "$modified" -gt 0 ] || [ "$untracked" -gt 0 ]; then
@@ -541,23 +824,47 @@ collect_git_push_state() {
 build_git_outgoing_detail() {
   local root="$1"
   local upstream="$2"
-  local hashes hash subject stat result=""
+  local hashes hash short_hash subject stat_tsv result=""
+  local tab=$'\t'
+  local commit_hashes=() commit_subjects=() commit_tsv_list=()
+  local raw_show first_line
+
   hashes="$(git -C "$root" rev-list --reverse "${upstream}..HEAD" 2>/dev/null || true)"
+
+  # Collect raw TSV per commit; subject and numstat from a single git show call
   while IFS= read -r hash; do
     [ -z "$hash" ] && continue
-    subject="$(git -C "$root" log -1 --format=%s "$hash" 2>/dev/null || true)"
-    stat="$(git -C "$root" show --stat --format= "$hash" 2>/dev/null || true)"
-    stat="$(sanitize_stat_block "$stat")"
-    if [ -n "$result" ]; then
-      result="${result}"$'\n'$'\n'
-    fi
-    result="${result}${subject}"
-    if [ -n "$stat" ]; then
-      result="${result}"$'\n'"$stat"
-    fi
+    short_hash="${hash:0:7}"
+    raw_show="$(git -C "$root" show --numstat --format='%s' "$hash" 2>/dev/null || true)"
+    first_line="${raw_show%%$'\n'*}"
+    subject="$first_line"
+    # numstat follows the subject line and a blank separator line
+    stat_tsv="${raw_show#*$'\n'$'\n'}"
+    [ "$stat_tsv" = "$raw_show" ] && stat_tsv=""
+    commit_hashes+=("$short_hash")
+    commit_subjects+=("$subject")
+    commit_tsv_list+=("$stat_tsv")
   done <<EOF
 $hashes
 EOF
+
+  if [ "${#commit_hashes[@]}" -eq 0 ]; then
+    return
+  fi
+
+  # Serialize as __C__\t{title}\n{tsv}\n__E__ — formatting is deferred to render time
+  local i
+  for ((i = 0; i < ${#commit_hashes[@]}; i++)); do
+    if [ -n "$result" ]; then
+      result="${result}"$'\n'
+    fi
+    result="${result}__C__${tab}${commit_hashes[$i]}  ${commit_subjects[$i]}"
+    if [ -n "${commit_tsv_list[$i]}" ]; then
+      result="${result}"$'\n'"${commit_tsv_list[$i]}"
+    fi
+    result="${result}"$'\n'"__E__"
+  done
+
   printf '%s' "$result"
 }
 
@@ -615,8 +922,7 @@ collect_jj_work_state() {
   fi
 
   local detail
-  detail="$(jj -R "$root" diff --stat 2>/dev/null || true)"
-  detail="$(sanitize_stat_block "$detail")"
+  detail="$(collect_jj_stat_tsv "$root" '@')"
 
   if [ "$modified" -gt 0 ]; then
     set_work_status "$idx" "changes" "* ${modified} modified" "" "$detail"
@@ -628,14 +934,8 @@ collect_jj_work_state() {
 build_jj_outgoing_detail() {
   local root="$1"
   local dry_run_output="$2"
-  local commit_detail="${3:-}"
   local result=""
   local line action bookmark summary
-
-  if [ -n "$commit_detail" ]; then
-    printf 'Commits:\n%s' "$commit_detail"
-    return
-  fi
 
   while IFS= read -r line; do
     case "$line" in
@@ -660,13 +960,6 @@ build_jj_outgoing_detail() {
   done <<EOF
 $dry_run_output
 EOF
-
-  if [ -n "$commit_detail" ]; then
-    if [ -n "$result" ]; then
-      result="${result}"$'\n'
-    fi
-    result="${result}Commits:"$'\n'"$commit_detail"
-  fi
 
   printf '%s' "$result"
 }
@@ -741,13 +1034,16 @@ collect_jj_push_state() {
       }
     ')"
     outgoing_revset="$(jj_outgoing_revset "$selected_remote")"
-    commit_detail="$(jj -R "$root" log -r "$outgoing_revset" --reversed --stat --no-graph -T 'commit_id.short() ++ " " ++ description.first_line() ++ "\n"' 2>/dev/null || true)"
-    commit_detail="$(trim_trailing_newlines "$commit_detail")"
+    commit_detail="$(build_jj_commit_detail "$root" "$outgoing_revset")"
     outgoing_count="$(count_jj_outgoing_commits "$root" "$outgoing_revset")"
     if [ -z "$outgoing_count" ] || ! is_integer "$outgoing_count" || [ "$outgoing_count" -eq 0 ]; then
       outgoing_count="$action_count"
     fi
-    detail="$(build_jj_outgoing_detail "$root" "$dry_run_output" "$commit_detail")"
+    if [ -n "$commit_detail" ]; then
+      detail="$commit_detail"
+    else
+      detail="$(build_jj_outgoing_detail "$root" "$dry_run_output")"
+    fi
     if [ "$draft_count" -gt 0 ]; then
       set_push_status "$idx" "outgoing" "↑ ${outgoing_count} outgoing (+${draft_count} draft)" "" "$detail"
     else
@@ -967,101 +1263,213 @@ print_default_view() {
   done
 }
 
+format_commit_raw_data() {
+  local raw_data="$1"
+  local global_max_total="${2:-0}"
+  local result="" line title cur_tsv="" in_commit=0
+  local dline indented_detail detail
+  local tab=$'\t'
+
+  while IFS= read -r line; do
+    case "$line" in
+    "__C__${tab}"*)
+      title="${line#"__C__${tab}"}"
+      cur_tsv=""
+      in_commit=1
+      ;;
+    "__E__")
+      if [ "$in_commit" -eq 1 ]; then
+        detail="$(format_compact_stat_tsv "$cur_tsv" 7 "$global_max_total")"
+        if [ -n "$result" ]; then
+          result="${result}"$'\n'$'\n'
+        fi
+        result="${result}${title}"
+        if [ -n "$detail" ]; then
+          indented_detail=""
+          while IFS= read -r dline; do
+            [ -n "$dline" ] || continue
+            [ -n "$indented_detail" ] && indented_detail="${indented_detail}"$'\n'
+            indented_detail="${indented_detail}  ${dline}"
+          done <<EOF
+$detail
+EOF
+          result="${result}"$'\n'"$indented_detail"
+        fi
+      fi
+      in_commit=0
+      cur_tsv=""
+      ;;
+    *)
+      if [ "$in_commit" -eq 1 ]; then
+        [ -n "$cur_tsv" ] && cur_tsv="${cur_tsv}"$'\n'"$line" || cur_tsv="$line"
+      fi
+      ;;
+    esac
+  done <<EOF
+$raw_data
+EOF
+
+  printf '%s' "$result"
+}
+
 print_multiline_block() {
   local block="$1"
-  local line
+  local indent="${2:-5}"
+  local pad line
+  printf -v pad '%*s' "$indent" ''
   while IFS= read -r line; do
-    [ -z "$line" ] && continue
-    printf '  %s\n' "$line"
+    if [ -z "$line" ]; then
+      printf '\n'
+    else
+      printf '%s%s\n' "$pad" "$line"
+    fi
   done <<EOF
 $block
 EOF
 }
 
+print_repo_header_line() {
+  local label="$1"
+  local cols prefix fill dashes
+  cols="$(terminal_columns)"
+  prefix="-- ${label} "
+  fill=$((cols - ${#prefix}))
+  dashes=""
+  if [ "$fill" -gt 0 ]; then
+    dashes="$(repeat_char '-' "$fill")"
+  fi
+  if [ "$ENABLE_COLOR" -eq 1 ]; then
+    printf '\033[1m%s%s\033[0m\n' "$prefix" "$dashes"
+  else
+    printf '%s%s\n' "$prefix" "$dashes"
+  fi
+}
+
+print_section_label() {
+  local kind="$1"
+  local symbol="$2"
+  local text="$3"
+  local color
+  if [ "$ENABLE_COLOR" -eq 1 ]; then
+    color="$(status_color "$kind")"
+    if [ -n "$color" ]; then
+      printf '   %b%s %s%b\n' "$color" "$symbol" "$text" '\033[0m'
+      return
+    fi
+  fi
+  printf '   %s %s\n' "$symbol" "$text"
+}
+
+max_total_from_commit_raw_data() {
+  local raw_data="$1"
+  local max=0 block_max line cur_tsv="" in_commit=0
+  local tab=$'\t'
+  while IFS= read -r line; do
+    case "$line" in
+    "__C__${tab}"*) cur_tsv=""; in_commit=1 ;;
+    "__E__")
+      if [ "$in_commit" -eq 1 ] && [ -n "$cur_tsv" ]; then
+        block_max="$(tsv_max_total "$cur_tsv")"
+        [ "$block_max" -gt "$max" ] && max="$block_max"
+      fi
+      in_commit=0; cur_tsv="" ;;
+    *)
+      if [ "$in_commit" -eq 1 ]; then
+        [ -n "$cur_tsv" ] && cur_tsv="${cur_tsv}"$'\n'"$line" || cur_tsv="$line"
+      fi ;;
+    esac
+  done <<EOF
+$raw_data
+EOF
+  printf '%s' "$max"
+}
+
 print_detail_view() {
   local shown_indices=()
-  local i label max_label=0 max_push=0 max_work=0
-  local label_plain push_plain work_plain
+  local i
   for ((i = 0; i < ${#REPO_ROOTS[@]}; i++)); do
     if ! should_show_repo "$i"; then
       continue
     fi
     shown_indices+=("$i")
-    label_plain="$(display_path "${REPO_ROOTS[$i]}")  [${REPO_TYPES[$i]}]"
-    push_plain="${REPO_PUSH_PLAIN[$i]}"
-    work_plain="${REPO_WORK_PLAIN[$i]}"
-    if [ "${#label_plain}" -gt "$max_label" ]; then
-      max_label="${#label_plain}"
-    fi
-    if [ "${#push_plain}" -gt "$max_push" ]; then
-      max_push="${#push_plain}"
-    fi
-    if [ "${#work_plain}" -gt "$max_work" ]; then
-      max_work="${#work_plain}"
-    fi
   done
 
   if [ "${#shown_indices[@]}" -eq 0 ]; then
     return
   fi
 
+  # Pass 2: scan all repos to find global max_total for consistent column alignment
+  local global_max_total=0 block_max
+  local tab=$'\t'
+  for i in "${shown_indices[@]}"; do
+    case "${REPO_PUSH_DETAIL[$i]}" in
+    "__C__${tab}"*)
+      block_max="$(max_total_from_commit_raw_data "${REPO_PUSH_DETAIL[$i]}")"
+      [ "$block_max" -gt "$global_max_total" ] && global_max_total="$block_max"
+      ;;
+    esac
+    if [ -n "${REPO_WORK_DETAIL[$i]}" ]; then
+      block_max="$(tsv_max_total "${REPO_WORK_DETAIL[$i]}")"
+      [ "$block_max" -gt "$global_max_total" ] && global_max_total="$block_max"
+    fi
+  done
+
+  # Pass 3: format and print each repo using the global layout
   local first=1
-  local push_kind work_kind
-  local header_visible header_width divider
+  local push_kind work_kind label formatted
   for i in "${shown_indices[@]}"; do
     [ "$first" -eq 1 ] || printf '\n'
     first=0
-    label_plain="$(display_path "${REPO_ROOTS[$i]}")  [${REPO_TYPES[$i]}]"
-    push_plain="${REPO_PUSH_PLAIN[$i]}"
-    work_plain="${REPO_WORK_PLAIN[$i]}"
-    printf -v padded_push "%-${max_push}s" "$push_plain"
-    printf -v padded_work "%-${max_work}s" "$work_plain"
-    header_visible="[ ${label_plain} ]  ${padded_push}  |  ${padded_work}"
-    printf '[ %s ]  %s  |  %s\n' \
-      "$label_plain" \
-      "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
-      "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
-    header_width=${#header_visible}
-    divider=""
-    while [ "${#divider}" -lt "$header_width" ]; do
-      divider="${divider}-"
-    done
-    printf '%s\n' "$divider"
+    label="$(display_path "${REPO_ROOTS[$i]}")  [${REPO_TYPES[$i]}]"
+    print_repo_header_line "$label"
+    printf '   push:  %s\n' "$(colorize_status "${REPO_PUSH_KIND[$i]}" "${REPO_PUSH_PLAIN[$i]}")"
+    printf '   work:  %s\n' "$(colorize_status "${REPO_WORK_KIND[$i]}" "${REPO_WORK_PLAIN[$i]}")"
 
     push_kind="${REPO_PUSH_KIND[$i]}"
     work_kind="${REPO_WORK_KIND[$i]}"
 
     if [ -n "${REPO_PUSH_DETAIL[$i]}" ]; then
-      local outgoing_count
-      outgoing_count="$(printf '%s' "${REPO_PUSH_PLAIN[$i]}" | awk '{print $2}')"
-      printf 'Outgoing changes (%s):\n' "$outgoing_count"
-      print_multiline_block "${REPO_PUSH_DETAIL[$i]}"
+      printf '\n'
+      print_section_label "outgoing" "↑" "Outgoing"
+      case "${REPO_PUSH_DETAIL[$i]}" in
+      "__C__${tab}"*)
+        formatted="$(format_commit_raw_data "${REPO_PUSH_DETAIL[$i]}" "$global_max_total")"
+        print_multiline_block "$formatted" 5
+        ;;
+      *)
+        print_multiline_block "${REPO_PUSH_DETAIL[$i]}" 5
+        ;;
+      esac
       if [ "$push_kind" = "diverged" ] && [ -n "${REPO_PUSH_NOTE[$i]}" ]; then
-        printf '  Note: %s\n' "${REPO_PUSH_NOTE[$i]}"
+        printf '   Note: %s\n' "${REPO_PUSH_NOTE[$i]}"
       fi
     elif [ -n "${REPO_PUSH_NOTE[$i]}" ]; then
-      printf '  %s\n' "${REPO_PUSH_NOTE[$i]}"
+      printf '   Note: %s\n' "${REPO_PUSH_NOTE[$i]}"
     fi
 
     if [ -n "${REPO_DRAFT_DETAIL[$i]}" ]; then
-      printf 'JJ unbookmarked commits:\n'
-      print_multiline_block "${REPO_DRAFT_DETAIL[$i]}"
-      printf '  not pushable until bookmarked\n'
+      printf '\n'
+      print_section_label "draft" "~" "Drafts"
+      print_multiline_block "${REPO_DRAFT_DETAIL[$i]}" 5
+      printf '     not pushable until bookmarked\n'
     fi
 
     if [ -n "${REPO_WORK_DETAIL[$i]}" ]; then
-      printf 'Working copy changes:\n'
-      print_multiline_block "${REPO_WORK_DETAIL[$i]}"
+      printf '\n'
+      print_section_label "changes" "*" "Working copy"
+      formatted="$(format_compact_stat_tsv "${REPO_WORK_DETAIL[$i]}" 5 "$global_max_total")"
+      print_multiline_block "$formatted" 5
     fi
 
     if [ -n "${REPO_UNTRACKED_DETAIL[$i]}" ]; then
-      printf 'Untracked files:\n'
-      print_multiline_block "${REPO_UNTRACKED_DETAIL[$i]}"
+      printf '\n'
+      print_section_label "question" "?" "Untracked"
+      print_multiline_block "${REPO_UNTRACKED_DETAIL[$i]}" 5
     fi
 
     if [ "$work_kind" = "error" ] || [ "$work_kind" = "unavailable" ]; then
       if [ -n "${REPO_WORK_NOTE[$i]}" ]; then
-        printf '  Working copy: %s\n' "${REPO_WORK_NOTE[$i]}"
+        printf '   Note: %s\n' "${REPO_WORK_NOTE[$i]}"
       fi
     fi
   done

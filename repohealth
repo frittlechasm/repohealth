@@ -753,6 +753,10 @@ print_default_view() {
     fi
   done
 
+  if [ "${#shown_indices[@]}" -eq 0 ]; then
+    return
+  fi
+
   local padded_label padded_push padded_work
   for i in "${shown_indices[@]}"; do
     label_plain="$(display_path "${REPO_ROOTS[$i]}")  [${REPO_TYPES[$i]}]"
@@ -801,6 +805,10 @@ print_detail_view() {
       max_work="${#work_plain}"
     fi
   done
+
+  if [ "${#shown_indices[@]}" -eq 0 ]; then
+    return
+  fi
 
   local first=1
   local push_kind work_kind

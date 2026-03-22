@@ -12,6 +12,7 @@ DETAIL_MODE=0
 FANCY_MODE=0
 REMOTE_OVERRIDE=""
 PARALLEL_JOBS=""
+EXCLUDE_PATTERNS=()
 SCAN_ROOT="."
 SCAN_ROOT_CANON=""
 STATE_TMP_DIR=""
@@ -49,6 +50,7 @@ Options:
   --check           Exit non-zero when any repo needs attention
   --remote NAME     Override the remote used for JJ push checks
   --jobs N          Collect repo state in parallel with up to N workers
+  --exclude PATTERN Exclude repos whose path matches the ERE (may be repeated)
   --detail          Show per-repo detailed sections
   --fancy           Experimental: enhanced block-char bars and dimmed chrome
   -h, --help        Show this help text
@@ -348,6 +350,21 @@ discover_repos() {
     normalized_root="$(canonicalize_dir "$normalized_root" 2>/dev/null || true)"
     if [ -z "$normalized_root" ]; then
       normalized_root="$candidate"
+    fi
+
+    if [ "${#EXCLUDE_PATTERNS[@]}" -gt 0 ]; then
+      local rel_path
+      rel_path="$(display_path "$normalized_root")"
+      local pat excluded=0
+      for pat in "${EXCLUDE_PATTERNS[@]}"; do
+        if [[ "$rel_path" =~ $pat ]]; then
+          excluded=1
+          break
+        fi
+      done
+      if [ "$excluded" -eq 1 ]; then
+        continue
+      fi
     fi
 
     add_repo "$normalized_root" "$type"
@@ -1669,6 +1686,11 @@ parse_args() {
       PARALLEL_JOBS="$2"
       is_integer "$PARALLEL_JOBS" || die "--jobs requires a positive integer"
       [ "$PARALLEL_JOBS" -ge 1 ] || die "--jobs requires a positive integer"
+      shift
+      ;;
+    --exclude)
+      [ "$#" -ge 2 ] || die "--exclude requires a value"
+      EXCLUDE_PATTERNS+=("$2")
       shift
       ;;
     --detail)

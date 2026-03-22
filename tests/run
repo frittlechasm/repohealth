@@ -177,6 +177,8 @@ main() {
   assert_snapshot "empty" "$TMP_ROOT/empty" --jobs 1
   assert_snapshot "default" "$workspace" --jobs 1
   assert_snapshot "dirty" "$workspace" --jobs 1 --dirty
+  assert_snapshot "exclude-single" "$workspace" --jobs 1 --exclude 'no-remote'
+  assert_snapshot "exclude-multi" "$workspace" --jobs 1 --exclude 'no-remote' --exclude 'clean'
   assert_snapshot "detail" "$workspace/ahead-dirty" --jobs 1 --detail
   assert_snapshot "detail-fancy" "$workspace/ahead-dirty" --jobs 1 --detail --fancy
   assert_jobs_consistent "$workspace"

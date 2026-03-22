@@ -42,6 +42,7 @@ If `directory` is omitted, the current directory is scanned.
 - `--depth N` limits traversal depth.
 - `--no-color` disables colored output.
 - `--check` exits non-zero when any repo needs attention.
+- `--exclude PATTERN` skips repos whose path matches the ERE. May be repeated to exclude multiple patterns.
 - `--remote NAME` overrides the remote used for Jujutsu push checks.
 - `--jobs N` limits parallel repo-state workers. Use `--jobs 1` for sequential collection.
 - `--detail` prints expanded per-repo sections.
@@ -72,6 +73,18 @@ Use in a shell check or automation:
 
 ```bash
 ./repohealth --check --dirty ~/src
+```
+
+Exclude repos matching a pattern:
+
+```bash
+./repohealth --exclude archived ~/src
+```
+
+Exclude multiple patterns:
+
+```bash
+./repohealth --exclude archived --exclude '\.bak$' ~/src
 ```
 
 Force sequential collection for debugging:

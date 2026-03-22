@@ -44,15 +44,15 @@ Usage: $PROGRAM_NAME [options] [directory]
 Scan nested Git and Jujutsu repos and report outgoing commits plus working-copy changes.
 
 Options:
-  --dirty           Show only repos with non-clean push or working-copy status
-  --depth N         Limit traversal depth
-  --check           Exit non-zero when any repo needs attention
-  --remote NAME     Override the remote used for JJ push checks
-  --jobs N          Collect repo state in parallel with up to N workers
-  --exclude PATTERN Exclude repos whose path matches the ERE (may be repeated)
-  --output FORMAT   Output format: json, fancy, no-color (default: human-readable table)
-  --detail          Show per-repo detailed sections
-  -h, --help        Show this help text
+  -d, --dirty           Show only repos with non-clean push or working-copy status
+  -n, --depth N         Limit traversal depth
+  -c, --check           Exit non-zero when any repo needs attention
+  -r, --remote NAME     Override the remote used for JJ push checks
+  -j, --jobs N          Collect repo state in parallel with up to N workers
+  -e, --exclude PATTERN Exclude repos whose path matches the ERE (may be repeated)
+  -o, --output FORMAT   Output format: json, fancy, no-color (default: human-readable table)
+  -D, --detail          Show per-repo detailed sections
+  -h, --help            Show this help text
 EOF
 }
 
@@ -1880,36 +1880,36 @@ check_exit_status() {
 parse_args() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
-    --dirty)
+    -d | --dirty)
       DIRTY_ONLY=1
       ;;
-    --depth)
+    -n | --depth)
       [ "$#" -ge 2 ] || die "--depth requires a value"
       MAX_DEPTH="$2"
       is_integer "$MAX_DEPTH" || die "--depth requires a non-negative integer"
       shift
       ;;
-    --check)
+    -c | --check)
       CHECK_MODE=1
       ;;
-    --remote)
+    -r | --remote)
       [ "$#" -ge 2 ] || die "--remote requires a value"
       REMOTE_OVERRIDE="$2"
       shift
       ;;
-    --jobs)
+    -j | --jobs)
       [ "$#" -ge 2 ] || die "--jobs requires a value"
       PARALLEL_JOBS="$2"
       is_integer "$PARALLEL_JOBS" || die "--jobs requires a positive integer"
       [ "$PARALLEL_JOBS" -ge 1 ] || die "--jobs requires a positive integer"
       shift
       ;;
-    --exclude)
+    -e | --exclude)
       [ "$#" -ge 2 ] || die "--exclude requires a value"
       EXCLUDE_PATTERNS+=("$2")
       shift
       ;;
-    --output)
+    -o | --output)
       [ "$#" -ge 2 ] || die "--output requires a value"
       OUTPUT="$2"
       case "$OUTPUT" in
@@ -1918,7 +1918,7 @@ parse_args() {
       esac
       shift
       ;;
-    --detail)
+    -D | --detail)
       DETAIL_MODE=1
       ;;
     -h | --help)

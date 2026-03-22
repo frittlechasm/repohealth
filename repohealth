@@ -1223,41 +1223,42 @@ should_show_repo() {
 
 print_default_view() {
   local shown_indices=()
-  local i label max_label=0 max_push=0 max_work=0
-  local label_plain push_plain work_plain
+  local -a cached_paths=()
+  local i path_plain type_plain push_plain work_plain
+  local max_path=0 max_type=0 max_push=0 max_work=0
   for ((i = 0; i < ${#REPO_ROOTS[@]}; i++)); do
     if ! should_show_repo "$i"; then
       continue
     fi
     shown_indices+=("$i")
-    label_plain="$(display_path "${REPO_ROOTS[$i]}")  [${REPO_TYPES[$i]}]"
+    path_plain="$(display_path "${REPO_ROOTS[$i]}")"
+    cached_paths[$i]="$path_plain"
+    type_plain="[${REPO_TYPES[$i]}]"
     push_plain="${REPO_PUSH_PLAIN[$i]}"
     work_plain="${REPO_WORK_PLAIN[$i]}"
-    if [ "${#label_plain}" -gt "$max_label" ]; then
-      max_label="${#label_plain}"
-    fi
-    if [ "${#push_plain}" -gt "$max_push" ]; then
-      max_push="${#push_plain}"
-    fi
-    if [ "${#work_plain}" -gt "$max_work" ]; then
-      max_work="${#work_plain}"
-    fi
+    [ "${#path_plain}" -gt "$max_path" ] && max_path="${#path_plain}"
+    [ "${#type_plain}" -gt "$max_type" ] && max_type="${#type_plain}"
+    [ "${#push_plain}" -gt "$max_push" ] && max_push="${#push_plain}"
+    [ "${#work_plain}" -gt "$max_work" ] && max_work="${#work_plain}"
   done
 
   if [ "${#shown_indices[@]}" -eq 0 ]; then
     return
   fi
 
-  local padded_label padded_push padded_work
+  local padded_path padded_type padded_push padded_work
   for i in "${shown_indices[@]}"; do
-    label_plain="$(display_path "${REPO_ROOTS[$i]}")  [${REPO_TYPES[$i]}]"
+    path_plain="${cached_paths[$i]}"
+    type_plain="[${REPO_TYPES[$i]}]"
     push_plain="${REPO_PUSH_PLAIN[$i]}"
     work_plain="${REPO_WORK_PLAIN[$i]}"
-    printf -v padded_label "%-${max_label}s" "$label_plain"
+    printf -v padded_path "%-${max_path}s" "$path_plain"
+    printf -v padded_type "%-${max_type}s" "$type_plain"
     printf -v padded_push "%-${max_push}s" "$push_plain"
     printf -v padded_work "%-${max_work}s" "$work_plain"
-    printf '%s  %s  |  %s\n' \
-      "$padded_label" \
+    printf '%s  %s  %s  |  %s\n' \
+      "$padded_path" \
+      "$padded_type" \
       "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
       "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
   done

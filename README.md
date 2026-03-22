@@ -11,8 +11,9 @@ The script is designed for fast workspace sweeps where you want one aligned view
 - Recursively discovers nested `.git` and `.jj` repositories.
 - Prefers `jj` when a repo root contains both Git and Jujutsu metadata.
 - Reports Git outgoing, behind, diverged, and working-copy states.
-- Reports Jujutsu outgoing bookmark actions, draft commits, and working-copy changes.
+- Reports Jujutsu outgoing commit counts, draft commits, and working-copy changes.
 - Supports a compact table view and a per-repo detail view.
+- In `--detail`, Jujutsu outgoing sections include the push action plus a per-commit stat breakdown.
 - Supports a check mode for scripting and automation.
 
 ## Requirements
@@ -84,6 +85,7 @@ Common push statuses:
 
 - `- up to date`
 - `↑ N outgoing`
+  For Jujutsu repos, this is the number of commits reachable from local bookmarks that are not yet on the selected remote bookmark ancestry.
 - `↓ N behind`
 - `↕ A ahead, B behind`
 - `? no commits`
@@ -126,5 +128,5 @@ When changing the script, validate a few representative cases:
 ## Limitations
 
 - Git status is compared against the configured upstream branch, not every remote branch.
-- Jujutsu push checks rely on `jj git push --dry-run`, so behavior follows the installed `jj` version.
+- Jujutsu pushability and detail output rely on `jj git push --dry-run`, so behavior follows the installed `jj` version.
 - The script reports repository state; it does not fetch, pull, push, or mutate repos.

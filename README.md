@@ -12,6 +12,7 @@ The script is designed for fast workspace sweeps where you want one aligned view
 - Prefers `jj` when a repo root contains both Git and Jujutsu metadata.
 - Reports Git outgoing, behind, diverged, and working-copy states.
 - Reports Jujutsu outgoing commit counts, draft commits, and working-copy changes.
+- Collects per-repo state in parallel by default for faster workspace sweeps.
 - Supports a compact table view and a per-repo detail view.
 - In `--detail`, Jujutsu outgoing sections include the push action plus a per-commit stat breakdown.
 - Supports a check mode for scripting and automation.
@@ -42,6 +43,7 @@ If `directory` is omitted, the current directory is scanned.
 - `--no-color` disables colored output.
 - `--check` exits non-zero when any repo needs attention.
 - `--remote NAME` overrides the remote used for Jujutsu push checks.
+- `--jobs N` limits parallel repo-state workers. Use `--jobs 1` for sequential collection.
 - `--detail` prints expanded per-repo sections.
 - `-h`, `--help` shows the help text.
 
@@ -69,6 +71,12 @@ Use in a shell check or automation:
 
 ```bash
 ./repohealth --check --dirty ~/src
+```
+
+Force sequential collection for debugging:
+
+```bash
+./repohealth --jobs 1 ~/src
 ```
 
 ## Output Model
@@ -109,6 +117,7 @@ At the end of every run, the script prints a summary line with scanned repo coun
 - The project is intentionally a single self-contained Bash script named `repohealth`.
 - There is no build, test, or lint pipeline.
 - Output is collected first and rendered second so columns can be aligned consistently.
+- Repo state collection runs in bounded parallel batches; rendering still happens in discovery order.
 - Repo rows are written to stdout, while warnings and errors go to stderr.
 - Discovery skips common heavy directories such as `node_modules`, `vendor`, `target`, `__pycache__`, `.svn`, and `.hg`.
 - Linked Git worktrees referenced through `.git` files under `/worktrees/` are skipped intentionally.
@@ -122,6 +131,7 @@ When changing the script, validate a few representative cases:
 - Scan a normal Git repo with no remote.
 - Scan a clean Git repo with an upstream.
 - Run `--dirty` against a fully clean repo and confirm it does not crash.
+- Compare `--jobs 1` and the default run on the same workspace and confirm output matches.
 - Run `--detail` and confirm the detailed sections remain aligned and readable.
 - If `jj` is installed, test a repo with draft commits and one with pushable bookmark changes.
 

@@ -10,8 +10,10 @@ NO_COLOR_FLAG=0
 CHECK_MODE=0
 DETAIL_MODE=0
 REMOTE_OVERRIDE=""
+PARALLEL_JOBS=""
 SCAN_ROOT="."
 SCAN_ROOT_CANON=""
+STATE_TMP_DIR=""
 
 HAVE_GIT=0
 HAVE_JJ=0
@@ -44,6 +46,7 @@ Options:
   --no-color        Disable colored output
   --check           Exit non-zero when any repo needs attention
   --remote NAME     Override the remote used for JJ push checks
+  --jobs N          Collect repo state in parallel with up to N workers
   --detail          Show per-repo detailed sections
   -h, --help        Show this help text
 EOF
@@ -113,6 +116,23 @@ is_integer() {
   esac
 }
 
+default_parallel_jobs() {
+  local jobs=""
+  if command_exists getconf; then
+    jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+  fi
+  if [ -z "$jobs" ] && command_exists sysctl; then
+    jobs="$(sysctl -n hw.ncpu 2>/dev/null || true)"
+  fi
+  if ! is_integer "$jobs" || [ "$jobs" -lt 1 ]; then
+    jobs=4
+  fi
+  if [ "$jobs" -gt 8 ]; then
+    jobs=8
+  fi
+  printf '%s' "$jobs"
+}
+
 status_color() {
   local kind="$1"
   case "$kind" in
@@ -159,6 +179,35 @@ trim_trailing_newlines() {
     value="${value%$'\n'}"
   done
   printf '%s' "$value"
+}
+
+cleanup_temp_state() {
+  if [ -n "$STATE_TMP_DIR" ] && [ -d "$STATE_TMP_DIR" ]; then
+    rm -rf "$STATE_TMP_DIR"
+  fi
+}
+
+make_temp_dir() {
+  local base="${TMPDIR:-/tmp}"
+  local dir=""
+  if command_exists mktemp; then
+    dir="$(mktemp -d "$base/repohealth.XXXXXX" 2>/dev/null || true)"
+  fi
+  if [ -n "$dir" ]; then
+    printf '%s' "$dir"
+    return 0
+  fi
+
+  local candidate attempt=0
+  while [ "$attempt" -lt 100 ]; do
+    candidate="$base/repohealth.$$.$RANDOM"
+    if mkdir "$candidate" 2>/dev/null; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+  done
+  return 1
 }
 
 first_nonempty_line() {
@@ -750,6 +799,103 @@ collect_repo_state() {
   fi
 }
 
+write_repo_state() {
+  local idx="$1"
+  printf 'REPO_PUSH_KIND[%s]=%q\n' "$idx" "${REPO_PUSH_KIND[$idx]}"
+  printf 'REPO_PUSH_PLAIN[%s]=%q\n' "$idx" "${REPO_PUSH_PLAIN[$idx]}"
+  printf 'REPO_PUSH_NOTE[%s]=%q\n' "$idx" "${REPO_PUSH_NOTE[$idx]}"
+  printf 'REPO_PUSH_DETAIL[%s]=%q\n' "$idx" "${REPO_PUSH_DETAIL[$idx]}"
+  printf 'REPO_WORK_KIND[%s]=%q\n' "$idx" "${REPO_WORK_KIND[$idx]}"
+  printf 'REPO_WORK_PLAIN[%s]=%q\n' "$idx" "${REPO_WORK_PLAIN[$idx]}"
+  printf 'REPO_WORK_NOTE[%s]=%q\n' "$idx" "${REPO_WORK_NOTE[$idx]}"
+  printf 'REPO_WORK_DETAIL[%s]=%q\n' "$idx" "${REPO_WORK_DETAIL[$idx]}"
+  printf 'REPO_UNTRACKED_DETAIL[%s]=%q\n' "$idx" "${REPO_UNTRACKED_DETAIL[$idx]}"
+  printf 'REPO_DRAFT_DETAIL[%s]=%q\n' "$idx" "${REPO_DRAFT_DETAIL[$idx]}"
+}
+
+load_repo_state() {
+  local idx="$1"
+  local state_file="$2"
+  if [ ! -f "$state_file" ]; then
+    warn "Parallel state collection failed for ${REPO_ROOTS[$idx]}"
+    set_push_status "$idx" "error" "!! scan error" "parallel state collection failed"
+    set_work_status "$idx" "error" "!! scan error" "parallel state collection failed"
+    return
+  fi
+
+  # shellcheck source=/dev/null
+  . "$state_file"
+}
+
+emit_repo_warnings() {
+  local err_file="$1"
+  if [ -s "$err_file" ]; then
+    cat "$err_file" >&2
+  fi
+}
+
+collect_repo_state_batch() {
+  local indices=("$@")
+  local idx pid state_file err_file
+  local pids=()
+
+  for idx in "${indices[@]}"; do
+    state_file="$STATE_TMP_DIR/repo.$idx.state"
+    err_file="$STATE_TMP_DIR/repo.$idx.err"
+    (
+      collect_repo_state "$idx" >/dev/null
+      write_repo_state "$idx" >"$state_file"
+    ) 2>"$err_file" &
+    pids+=("$!")
+  done
+
+  for pid in "${pids[@]}"; do
+    wait "$pid"
+  done
+
+  for idx in "${indices[@]}"; do
+    state_file="$STATE_TMP_DIR/repo.$idx.state"
+    err_file="$STATE_TMP_DIR/repo.$idx.err"
+    load_repo_state "$idx" "$state_file"
+    emit_repo_warnings "$err_file"
+  done
+}
+
+collect_all_repo_states() {
+  local repo_count="${#REPO_ROOTS[@]}"
+  local jobs="$PARALLEL_JOBS"
+  local i
+
+  if [ "$repo_count" -eq 0 ]; then
+    return
+  fi
+
+  if [ "$jobs" -le 1 ] || [ "$repo_count" -le 1 ]; then
+    for ((i = 0; i < repo_count; i++)); do
+      collect_repo_state "$i"
+    done
+    return
+  fi
+
+  STATE_TMP_DIR="$(make_temp_dir)" || die "failed to create temporary directory for parallel state collection"
+
+  local batch_indices=()
+  local batch_size=0
+  for ((i = 0; i < repo_count; i++)); do
+    batch_indices+=("$i")
+    batch_size=$((batch_size + 1))
+    if [ "$batch_size" -ge "$jobs" ]; then
+      collect_repo_state_batch "${batch_indices[@]}"
+      batch_indices=()
+      batch_size=0
+    fi
+  done
+
+  if [ "$batch_size" -gt 0 ]; then
+    collect_repo_state_batch "${batch_indices[@]}"
+  fi
+}
+
 repo_error_count() {
   local idx="$1"
   case "${REPO_PUSH_KIND[$idx]}:${REPO_WORK_KIND[$idx]}" in
@@ -991,6 +1137,13 @@ parse_args() {
       REMOTE_OVERRIDE="$2"
       shift
       ;;
+    --jobs)
+      [ "$#" -ge 2 ] || die "--jobs requires a value"
+      PARALLEL_JOBS="$2"
+      is_integer "$PARALLEL_JOBS" || die "--jobs requires a positive integer"
+      [ "$PARALLEL_JOBS" -ge 1 ] || die "--jobs requires a positive integer"
+      shift
+      ;;
     --detail)
       DETAIL_MODE=1
       ;;
@@ -1027,6 +1180,7 @@ parse_args() {
 
 main() {
   parse_args "$@"
+  trap cleanup_temp_state EXIT
 
   [ -d "$SCAN_ROOT" ] || die "directory does not exist: $SCAN_ROOT"
   SCAN_ROOT_CANON="$(canonicalize_dir "$SCAN_ROOT" 2>/dev/null || true)"
@@ -1048,13 +1202,13 @@ main() {
   if [ "$NO_COLOR_FLAG" -eq 0 ] && [ -z "${NO_COLOR:-}" ] && [ -t 1 ]; then
     ENABLE_COLOR=1
   fi
+  if [ -z "$PARALLEL_JOBS" ]; then
+    PARALLEL_JOBS="$(default_parallel_jobs)"
+  fi
 
   discover_repos
 
-  local i
-  for ((i = 0; i < ${#REPO_ROOTS[@]}; i++)); do
-    collect_repo_state "$i"
-  done
+  collect_all_repo_states
 
   if [ "$DETAIL_MODE" -eq 1 ]; then
     print_detail_view

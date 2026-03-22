@@ -1,0 +1,52 @@
+{
+  "repos": [
+    {
+      "path": "ahead-dirty",
+      "type": "git",
+      "push": {
+        "kind": "outgoing",
+        "text": "↑ 1 outgoing",
+        "note": ""
+      },
+      "work": {
+        "kind": "changes",
+        "text": "* 1 modified, 1 untracked",
+        "note": ""
+      }
+    },
+    {
+      "path": "clean-upstream",
+      "type": "git",
+      "push": {
+        "kind": "clean",
+        "text": "- up to date",
+        "note": ""
+      },
+      "work": {
+        "kind": "clean",
+        "text": "- clean",
+        "note": ""
+      }
+    },
+    {
+      "path": "no-remote",
+      "type": "git",
+      "push": {
+        "kind": "question",
+        "text": "? no remote",
+        "note": "no Git remote configured"
+      },
+      "work": {
+        "kind": "clean",
+        "text": "- clean",
+        "note": ""
+      }
+    }
+  ],
+  "summary": {
+    "scanned": 3,
+    "outgoing": 1,
+    "dirty": 1,
+    "errors": 0
+  }
+}

@@ -13,7 +13,7 @@ The script is designed for fast workspace sweeps where you want one aligned view
 - Reports Git outgoing, behind, diverged, and working-copy states.
 - Reports Jujutsu outgoing commit counts, draft commits, and working-copy changes.
 - Collects per-repo state in parallel by default for faster workspace sweeps.
-- Supports a compact table view and a per-repo detail view.
+- Supports a compact table view, a per-repo detail view, and JSON output.
 - In `--detail`, Jujutsu outgoing sections show a per-commit stat breakdown for pushable commits.
 - Supports a check mode for scripting and automation.
 
@@ -40,13 +40,12 @@ If `directory` is omitted, the current directory is scanned.
 
 - `--dirty` shows only repos that are not fully clean.
 - `--depth N` limits traversal depth.
-- `--no-color` disables colored output.
 - `--check` exits non-zero when any repo needs attention.
 - `--exclude PATTERN` skips repos whose path matches the ERE. May be repeated to exclude multiple patterns.
 - `--remote NAME` overrides the remote used for Jujutsu push checks.
 - `--jobs N` limits parallel repo-state workers. Use `--jobs 1` for sequential collection.
+- `--output FORMAT` sets the output format. Supported values: `json`, `fancy`, `no-color`.
 - `--detail` prints expanded per-repo sections.
-- `--fancy` enables experimental enhanced rendering.
 - `-h`, `--help` shows the help text.
 
 ## Examples
@@ -85,6 +84,30 @@ Exclude multiple patterns:
 
 ```bash
 ./repohealth --exclude archived --exclude '\.bak$' ~/src
+```
+
+Output results as JSON:
+
+```bash
+./repohealth --output json ~/src
+```
+
+Output JSON with per-repo detail fields:
+
+```bash
+./repohealth --output json --detail ~/src
+```
+
+Use enhanced block-char rendering:
+
+```bash
+./repohealth --output fancy ~/src
+```
+
+Disable color output:
+
+```bash
+./repohealth --output no-color ~/src
 ```
 
 Force sequential collection for debugging:

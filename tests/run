@@ -102,7 +102,7 @@ run_cli() {
 
   local status=0
   set +e
-  env LC_ALL=C TZ=UTC COLUMNS=80 NO_COLOR=1 "$CLI" --no-color "$@" >"$stdout_file" 2>"$stderr_file"
+  env LC_ALL=C TZ=UTC COLUMNS=80 NO_COLOR=1 "$CLI" "$@" >"$stdout_file" 2>"$stderr_file"
   status=$?
   set -e
   printf '%s\n' "$status" >"$status_file"
@@ -180,7 +180,9 @@ main() {
   assert_snapshot "exclude-single" "$workspace" --jobs 1 --exclude 'no-remote'
   assert_snapshot "exclude-multi" "$workspace" --jobs 1 --exclude 'no-remote' --exclude 'clean'
   assert_snapshot "detail" "$workspace/ahead-dirty" --jobs 1 --detail
-  assert_snapshot "detail-fancy" "$workspace/ahead-dirty" --jobs 1 --detail --fancy
+  assert_snapshot "detail-fancy" "$workspace/ahead-dirty" --jobs 1 --detail --output fancy
+  assert_snapshot "format-json" "$workspace" --jobs 1 --output json
+  assert_snapshot "format-json-detail" "$workspace/ahead-dirty" --jobs 1 --output json --detail
   assert_jobs_consistent "$workspace"
 
   printf 'All snapshot tests passed.\n'

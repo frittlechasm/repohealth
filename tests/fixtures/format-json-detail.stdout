@@ -1,0 +1,28 @@
+{
+  "repos": [
+    {
+      "path": ".",
+      "type": "git",
+      "push": {
+        "kind": "outgoing",
+        "text": "↑ 1 outgoing",
+        "note": "",
+        "detail": "__C__\tc5591b6  Add beta line\n1\t0\ttracked.txt\n__E__",
+        "drafts": ""
+      },
+      "work": {
+        "kind": "changes",
+        "text": "* 1 modified, 1 untracked",
+        "note": "",
+        "detail": "1\t0\ttracked.txt",
+        "untracked": "notes.tmp"
+      }
+    }
+  ],
+  "summary": {
+    "scanned": 1,
+    "outgoing": 1,
+    "dirty": 1,
+    "errors": 0
+  }
+}

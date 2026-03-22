@@ -6,10 +6,9 @@ PROGRAM_NAME="${0##*/}"
 
 DIRTY_ONLY=0
 MAX_DEPTH=""
-NO_COLOR_FLAG=0
 CHECK_MODE=0
 DETAIL_MODE=0
-FANCY_MODE=0
+OUTPUT=""
 REMOTE_OVERRIDE=""
 PARALLEL_JOBS=""
 EXCLUDE_PATTERNS=()
@@ -46,13 +45,12 @@ Scan nested Git and Jujutsu repos and report outgoing commits plus working-copy 
 Options:
   --dirty           Show only repos with non-clean push or working-copy status
   --depth N         Limit traversal depth
-  --no-color        Disable colored output
   --check           Exit non-zero when any repo needs attention
   --remote NAME     Override the remote used for JJ push checks
   --jobs N          Collect repo state in parallel with up to N workers
   --exclude PATTERN Exclude repos whose path matches the ERE (may be repeated)
+  --output FORMAT   Output format: json, fancy, no-color (default: human-readable table)
   --detail          Show per-repo detailed sections
-  --fancy           Experimental: enhanced block-char bars and dimmed chrome
   -h, --help        Show this help text
 EOF
 }
@@ -68,6 +66,16 @@ warn() {
 
 command_exists() {
   command -v "$1" >/dev/null 2>&1
+}
+
+json_escape() {
+  local _var="$1" _s="$2"
+  _s="${_s//\\/\\\\}"
+  _s="${_s//\"/\\\"}"
+  _s="${_s//$'\r'/\\r}"
+  _s="${_s//$'\n'/\\n}"
+  _s="${_s//$'\t'/\\t}"
+  printf -v "$_var" '%s' "$_s"
 }
 
 canonicalize_dir() {
@@ -1605,27 +1613,77 @@ print_detail_view() {
   done
 }
 
+compute_summary() {
+  local _i _out=0 _dirty=0 _errs=0
+  for ((_i = 0; _i < ${#REPO_ROOTS[@]}; _i++)); do
+    case "${REPO_PUSH_KIND[$_i]}" in
+    outgoing | diverged) _out=$((_out + 1)) ;;
+    esac
+    case "${REPO_WORK_KIND[$_i]}" in
+    changes) _dirty=$((_dirty + 1)) ;;
+    esac
+    case "${REPO_PUSH_KIND[$_i]}:${REPO_WORK_KIND[$_i]}" in
+    *error* | *unavailable*) _errs=$((_errs + 1)) ;;
+    esac
+  done
+  printf -v "$1" '%d' "$_out"
+  printf -v "$2" '%d' "$_dirty"
+  printf -v "$3" '%d' "$_errs"
+}
+
+print_json_view() {
+  local i repo_count="${#REPO_ROOTS[@]}"
+  local outgoing local_changes errors
+  compute_summary outgoing local_changes errors
+
+  printf '{\n'
+  printf '  "repos": [\n'
+  local first=1 je
+  for ((i = 0; i < repo_count; i++)); do
+    if ! should_show_repo "$i"; then
+      continue
+    fi
+    local path_plain
+    path_plain="$(display_path "${REPO_ROOTS[$i]}")"
+    [ "$first" -eq 0 ] && printf ',\n'
+    first=0
+    printf '    {\n'
+    json_escape je "$path_plain";             printf '      "path": "%s",\n' "$je"
+    json_escape je "${REPO_TYPES[$i]}";       printf '      "type": "%s",\n' "$je"
+    printf '      "push": {\n'
+    json_escape je "${REPO_PUSH_KIND[$i]}";   printf '        "kind": "%s",\n' "$je"
+    json_escape je "${REPO_PUSH_PLAIN[$i]}";  printf '        "text": "%s",\n' "$je"
+    json_escape je "${REPO_PUSH_NOTE[$i]}";   printf '        "note": "%s"' "$je"
+    if [ "$DETAIL_MODE" -eq 1 ]; then
+      json_escape je "${REPO_PUSH_DETAIL[$i]}";  printf ',\n        "detail": "%s"' "$je"
+      json_escape je "${REPO_DRAFT_DETAIL[$i]}"; printf ',\n        "drafts": "%s"' "$je"
+    fi
+    printf '\n      },\n'
+    printf '      "work": {\n'
+    json_escape je "${REPO_WORK_KIND[$i]}";   printf '        "kind": "%s",\n' "$je"
+    json_escape je "${REPO_WORK_PLAIN[$i]}";  printf '        "text": "%s",\n' "$je"
+    json_escape je "${REPO_WORK_NOTE[$i]}";   printf '        "note": "%s"' "$je"
+    if [ "$DETAIL_MODE" -eq 1 ]; then
+      json_escape je "${REPO_WORK_DETAIL[$i]}";     printf ',\n        "detail": "%s"' "$je"
+      json_escape je "${REPO_UNTRACKED_DETAIL[$i]}"; printf ',\n        "untracked": "%s"' "$je"
+    fi
+    printf '\n      }\n'
+    printf '    }'
+  done
+  printf '\n  ],\n'
+  printf '  "summary": {\n'
+  printf '    "scanned": %d,\n' "$repo_count"
+  printf '    "outgoing": %d,\n' "$outgoing"
+  printf '    "dirty": %d,\n' "$local_changes"
+  printf '    "errors": %d\n' "$errors"
+  printf '  }\n'
+  printf '}\n'
+}
+
 print_summary() {
   local repo_count="${#REPO_ROOTS[@]}"
-  local outgoing=0
-  local local_changes=0
-  local errors=0
-  local i
-  for ((i = 0; i < repo_count; i++)); do
-    case "${REPO_PUSH_KIND[$i]}" in
-    outgoing | diverged)
-      outgoing=$((outgoing + 1))
-      ;;
-    esac
-    case "${REPO_WORK_KIND[$i]}" in
-    changes)
-      local_changes=$((local_changes + 1))
-      ;;
-    esac
-    if [ "$(repo_error_count "$i")" -eq 1 ]; then
-      errors=$((errors + 1))
-    fi
-  done
+  local outgoing local_changes errors
+  compute_summary outgoing local_changes errors
 
   local line="scanned: ${repo_count}  outgoing: ${outgoing}  dirty: ${local_changes}"
   if [ "$errors" -gt 0 ]; then
@@ -1670,9 +1728,6 @@ parse_args() {
       is_integer "$MAX_DEPTH" || die "--depth requires a non-negative integer"
       shift
       ;;
-    --no-color)
-      NO_COLOR_FLAG=1
-      ;;
     --check)
       CHECK_MODE=1
       ;;
@@ -1693,11 +1748,17 @@ parse_args() {
       EXCLUDE_PATTERNS+=("$2")
       shift
       ;;
+    --output)
+      [ "$#" -ge 2 ] || die "--output requires a value"
+      OUTPUT="$2"
+      case "$OUTPUT" in
+      json | fancy | no-color) ;;
+      *) die "unsupported output: $OUTPUT (supported: json, fancy, no-color)" ;;
+      esac
+      shift
+      ;;
     --detail)
       DETAIL_MODE=1
-      ;;
-    --fancy)
-      FANCY_MODE=1
       ;;
     -h | --help)
       usage
@@ -1751,9 +1812,16 @@ main() {
     die "neither git nor jj is available"
   fi
 
-  if [ "$NO_COLOR_FLAG" -eq 0 ] && [ -z "${NO_COLOR:-}" ] && [ -t 1 ]; then
+  local no_color_flag=0 fancy_mode=0
+  case "$OUTPUT" in
+  no-color) no_color_flag=1 ;;
+  fancy) fancy_mode=1 ;;
+  esac
+
+  if [ "$no_color_flag" -eq 0 ] && [ -z "${NO_COLOR:-}" ] && [ -t 1 ]; then
     ENABLE_COLOR=1
   fi
+  FANCY_MODE="$fancy_mode"
   if [ -z "$PARALLEL_JOBS" ]; then
     PARALLEL_JOBS="$(default_parallel_jobs)"
   fi
@@ -1763,12 +1831,16 @@ main() {
 
   collect_all_repo_states
 
-  if [ "$DETAIL_MODE" -eq 1 ]; then
+  if [ "$OUTPUT" = "json" ]; then
+    ENABLE_COLOR=0
+    print_json_view
+  elif [ "$DETAIL_MODE" -eq 1 ]; then
     print_detail_view
+    print_summary
   else
     print_default_view
+    print_summary
   fi
-  print_summary
 
   if check_exit_status; then
     exit 0

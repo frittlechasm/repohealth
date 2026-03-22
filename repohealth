@@ -631,6 +631,12 @@ build_jj_outgoing_detail() {
   local commit_detail="${3:-}"
   local result=""
   local line action bookmark summary
+
+  if [ -n "$commit_detail" ]; then
+    printf 'Commits:\n%s' "$commit_detail"
+    return
+  fi
+
   while IFS= read -r line; do
     case "$line" in
     'Changes to push to '* | 'Dry-run requested, not pushing.')

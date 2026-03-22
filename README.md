@@ -14,7 +14,7 @@ The script is designed for fast workspace sweeps where you want one aligned view
 - Reports Jujutsu outgoing commit counts, draft commits, and working-copy changes.
 - Collects per-repo state in parallel by default for faster workspace sweeps.
 - Supports a compact table view and a per-repo detail view.
-- In `--detail`, Jujutsu outgoing sections include the push action plus a per-commit stat breakdown.
+- In `--detail`, Jujutsu outgoing sections show a per-commit stat breakdown for pushable commits.
 - Supports a check mode for scripting and automation.
 
 ## Requirements

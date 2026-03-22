@@ -249,9 +249,6 @@ default_parallel_jobs() {
   if ! is_integer "$jobs" || [ "$jobs" -lt 1 ]; then
     jobs=4
   fi
-  if [ "$jobs" -gt 8 ]; then
-    jobs=8
-  fi
   printf '%s' "$jobs"
 }
 
@@ -475,11 +472,6 @@ discover_repos() {
       if [ -z "$normalized_root" ]; then
         normalized_root="$candidate"
       fi
-    elif [ "$type" = "git" ] && [ "$HAVE_GIT" -eq 1 ]; then
-      normalized_root="$(git -C "$candidate" rev-parse --show-toplevel 2>/dev/null || true)"
-      if [ -z "$normalized_root" ]; then
-        normalized_root="$candidate"
-      fi
     else
       normalized_root="$candidate"
     fi
@@ -510,19 +502,19 @@ discover_repos() {
 
 sort_repos() {
   local count="${#REPO_ROOTS[@]}"
-  local i j root type
-  for ((i = 0; i < count; i++)); do
-    for ((j = i + 1; j < count; j++)); do
-      if [[ "${REPO_ROOTS[$j]}" < "${REPO_ROOTS[$i]}" ]]; then
-        root="${REPO_ROOTS[$i]}"
-        type="${REPO_TYPES[$i]}"
-        REPO_ROOTS[$i]="${REPO_ROOTS[$j]}"
-        REPO_TYPES[$i]="${REPO_TYPES[$j]}"
-        REPO_ROOTS[$j]="$root"
-        REPO_TYPES[$j]="$type"
-      fi
-    done
-  done
+  [ "$count" -le 1 ] && return
+  local i root idx
+  local new_roots=() new_types=()
+  while IFS=$'\t' read -r root idx; do
+    new_roots+=("$root")
+    new_types+=("${REPO_TYPES[$idx]}")
+  done < <(
+    for ((i = 0; i < count; i++)); do
+      printf '%s\t%s\n' "${REPO_ROOTS[$i]}" "$i"
+    done | sort
+  )
+  REPO_ROOTS=("${new_roots[@]}")
+  REPO_TYPES=("${new_types[@]}")
 }
 
 set_push_status() {
@@ -990,106 +982,148 @@ EOF
   fi
 }
 
-collect_git_push_state() {
+collect_git_state() {
   local idx="$1"
   local root="$2"
+  local status_output
 
-  if ! git -C "$root" rev-parse --verify HEAD >/dev/null 2>&1; then
+  if ! status_output="$(git -C "$root" status --porcelain=v2 --branch --untracked-files=normal 2>&1)"; then
+    warn "Git state check failed for $root: $(first_nonempty_line "$status_output")"
+    set_push_status "$idx" "error" "!! scan error" "$(first_nonempty_line "$status_output")"
+    set_work_status "$idx" "error" "!! scan error" "$(first_nonempty_line "$status_output")"
+    return
+  fi
+
+  # Parse branch header lines
+  local oid="" head_branch="" upstream="" ahead=0 behind=0 has_upstream=0
+  local ab line
+  while IFS= read -r line; do
+    case "$line" in
+      "# branch.oid "*)      oid="${line#'# branch.oid '}" ;;
+      "# branch.head "*)     head_branch="${line#'# branch.head '}" ;;
+      "# branch.upstream "*) upstream="${line#'# branch.upstream '}"; has_upstream=1 ;;
+      "# branch.ab "*)
+        ab="${line#'# branch.ab '}"
+        ahead="${ab%% -*}"; ahead="${ahead#+}"
+        behind="${ab##*-}"
+        ;;
+    esac
+  done <<EOF
+$status_output
+EOF
+
+  # --- Push state ---
+  if [ "$oid" = "(initial)" ]; then
     set_push_status "$idx" "question" "? no commits" "repository has no commits yet"
-    return
-  fi
-
-  local branch
-  branch="$(git -C "$root" symbolic-ref -q --short HEAD 2>/dev/null || true)"
-  if [ -z "$branch" ]; then
+  elif [ "$head_branch" = "(detached)" ]; then
     set_push_status "$idx" "question" "? detached HEAD" "detached HEAD — no upstream branch to compare"
-    return
-  fi
-
-  local remotes
-  remotes="$(git -C "$root" remote 2>/dev/null || true)"
-  if [ "$(count_nonempty_lines "$remotes")" -eq 0 ]; then
-    set_push_status "$idx" "question" "? no remote" "no Git remote configured"
-    return
-  fi
-
-  local upstream
-  upstream="$(git -C "$root" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
-  if [ -z "$upstream" ]; then
-    set_push_status "$idx" "question" "? no upstream" "no upstream configured for branch $branch"
-    return
-  fi
-
-  local counts ahead behind
-  counts="$(git -C "$root" rev-list --left-right --count "${upstream}...HEAD" 2>/dev/null || true)"
-  if [ -z "$counts" ]; then
-    warn "Git push-state check failed for $root"
-    set_push_status "$idx" "error" "!! scan error" "failed to compare HEAD with upstream"
-    return
-  fi
-
-  behind="${counts%%[[:space:]]*}"
-  ahead="${counts##*[[:space:]]}"
-
-  local detail=""
-  if [ "$ahead" -gt 0 ]; then
-    detail="$(build_git_outgoing_detail "$root" "$upstream")"
-  fi
-
-  if [ "$ahead" -gt 0 ] && [ "$behind" -gt 0 ]; then
-    set_push_status "$idx" "diverged" "↕ ${ahead} ahead, ${behind} behind" "behind remote by ${behind} commit(s)" "$detail"
-  elif [ "$ahead" -gt 0 ]; then
-    set_push_status "$idx" "outgoing" "↑ ${ahead} outgoing" "" "$detail"
-  elif [ "$behind" -gt 0 ]; then
-    set_push_status "$idx" "behind" "↓ ${behind} behind" "behind remote — pull required"
+  elif [ "$has_upstream" -eq 0 ]; then
+    local remotes
+    remotes="$(git -C "$root" remote 2>/dev/null || true)"
+    if [ "$(count_nonempty_lines "$remotes")" -eq 0 ]; then
+      set_push_status "$idx" "question" "? no remote" "no Git remote configured"
+    else
+      set_push_status "$idx" "question" "? no upstream" "no upstream configured for branch $head_branch"
+    fi
   else
-    set_push_status "$idx" "clean" "- up to date"
+    local push_detail=""
+    if [ "$ahead" -gt 0 ]; then
+      push_detail="$(build_git_outgoing_detail "$root" "$upstream")"
+    fi
+    if [ "$ahead" -gt 0 ] && [ "$behind" -gt 0 ]; then
+      set_push_status "$idx" "diverged" "↕ ${ahead} ahead, ${behind} behind" "behind remote by ${behind} commit(s)" "$push_detail"
+    elif [ "$ahead" -gt 0 ]; then
+      set_push_status "$idx" "outgoing" "↑ ${ahead} outgoing" "" "$push_detail"
+    elif [ "$behind" -gt 0 ]; then
+      set_push_status "$idx" "behind" "↓ ${behind} behind" "behind remote — pull required"
+    else
+      set_push_status "$idx" "clean" "- up to date"
+    fi
+  fi
+
+  # --- Work state ---
+  local modified=0 untracked=0 untracked_list="" path
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    case "$line" in
+      "# "*) ;;
+      "? "*)
+        untracked=$((untracked + 1))
+        path="${line#? }"
+        if [ -n "$untracked_list" ]; then
+          untracked_list="${untracked_list}"$'\n'"$path"
+        else
+          untracked_list="$path"
+        fi
+        ;;
+      "1 "* | "2 "* | "u "*) modified=$((modified + 1)) ;;
+    esac
+  done <<EOF
+$status_output
+EOF
+
+  local work_detail=""
+  if [ "$modified" -gt 0 ]; then
+    if [ "$oid" = "(initial)" ]; then
+      work_detail="$(collect_git_unborn_worktree_numstat "$root")"
+    else
+      work_detail="$(git -C "$root" diff HEAD --numstat 2>/dev/null || true)"
+    fi
+  fi
+
+  local display
+  display="$(join_counts "$modified" "$untracked")"
+  if [ "$modified" -gt 0 ] || [ "$untracked" -gt 0 ]; then
+    set_work_status "$idx" "changes" "$display" "" "$work_detail" "$untracked_list"
+  else
+    set_work_status "$idx" "clean" "- clean"
   fi
 }
 
 build_git_outgoing_detail() {
   local root="$1"
   local upstream="$2"
-  local hashes hash short_hash subject stat_tsv result=""
-  local tab=$'\t'
-  local commit_hashes=() commit_subjects=() commit_tsv_list=()
-  local raw_show first_line
+  local result="" tab=$'\t'
+  local raw_log line current_hash="" current_stats=""
 
-  hashes="$(git -C "$root" rev-list --reverse "${upstream}..HEAD" 2>/dev/null || true)"
-
-  # Collect raw TSV per commit; subject and numstat from a single git show call
-  while IFS= read -r hash; do
-    [ -z "$hash" ] && continue
-    short_hash="${hash:0:7}"
-    raw_show="$(git -C "$root" show --numstat --format='%s' "$hash" 2>/dev/null || true)"
-    first_line="${raw_show%%$'\n'*}"
-    subject="$first_line"
-    # numstat follows the subject line and a blank separator line
-    stat_tsv="${raw_show#*$'\n'$'\n'}"
-    [ "$stat_tsv" = "$raw_show" ] && stat_tsv=""
-    commit_hashes+=("$short_hash")
-    commit_subjects+=("$subject")
-    commit_tsv_list+=("$stat_tsv")
-  done <<EOF
-$hashes
-EOF
-
-  if [ "${#commit_hashes[@]}" -eq 0 ]; then
+  # Single git log call: subject + numstat for all outgoing commits
+  raw_log="$(git -C "$root" log --reverse --numstat --format="__C__${tab}%h  %s" "${upstream}..HEAD" 2>/dev/null || true)"
+  if [ -z "$raw_log" ]; then
     return
   fi
 
   # Serialize as __C__\t{title}\n{tsv}\n__E__ — formatting is deferred to render time
-  local i
-  for ((i = 0; i < ${#commit_hashes[@]}; i++)); do
-    if [ -n "$result" ]; then
-      result="${result}"$'\n'
-    fi
-    result="${result}__C__${tab}${commit_hashes[$i]}  ${commit_subjects[$i]}"
-    if [ -n "${commit_tsv_list[$i]}" ]; then
-      result="${result}"$'\n'"${commit_tsv_list[$i]}"
-    fi
+  while IFS= read -r line; do
+    case "$line" in
+      "__C__${tab}"*)
+        if [ -n "$current_hash" ]; then
+          [ -n "$result" ] && result="${result}"$'\n'
+          result="${result}__C__${tab}${current_hash}"
+          [ -n "$current_stats" ] && result="${result}"$'\n'"$current_stats"
+          result="${result}"$'\n'"__E__"
+        fi
+        current_hash="${line#"__C__${tab}"}"
+        current_stats=""
+        ;;
+      "") ;;
+      *)
+        if [ -n "$current_stats" ]; then
+          current_stats="${current_stats}"$'\n'"$line"
+        else
+          current_stats="$line"
+        fi
+        ;;
+    esac
+  done <<EOF
+$raw_log
+EOF
+
+  if [ -n "$current_hash" ]; then
+    [ -n "$result" ] && result="${result}"$'\n'
+    result="${result}__C__${tab}${current_hash}"
+    [ -n "$current_stats" ] && result="${result}"$'\n'"$current_stats"
     result="${result}"$'\n'"__E__"
-  done
+  fi
 
   printf '%s' "$result"
 }
@@ -1304,8 +1338,7 @@ collect_repo_state() {
       return
     fi
 
-    collect_git_push_state "$idx" "$root"
-    collect_git_work_state "$idx" "$root"
+    collect_git_state "$idx" "$root"
     return
   fi
 
@@ -1362,33 +1395,6 @@ emit_repo_warnings() {
   fi
 }
 
-collect_repo_state_batch() {
-  local indices=("$@")
-  local idx pid state_file err_file
-  local pids=()
-
-  for idx in "${indices[@]}"; do
-    state_file="$STATE_TMP_DIR/repo.$idx.state"
-    err_file="$STATE_TMP_DIR/repo.$idx.err"
-    (
-      collect_repo_state "$idx" >/dev/null
-      write_repo_state "$idx" >"$state_file"
-    ) 2>"$err_file" &
-    pids+=("$!")
-  done
-
-  for pid in "${pids[@]}"; do
-    wait "$pid"
-  done
-
-  for idx in "${indices[@]}"; do
-    state_file="$STATE_TMP_DIR/repo.$idx.state"
-    err_file="$STATE_TMP_DIR/repo.$idx.err"
-    load_repo_state "$idx" "$state_file"
-    emit_repo_warnings "$err_file"
-  done
-}
-
 collect_all_repo_states() {
   local repo_count="${#REPO_ROOTS[@]}"
   local jobs="$PARALLEL_JOBS"
@@ -1407,21 +1413,39 @@ collect_all_repo_states() {
 
   STATE_TMP_DIR="$(make_temp_dir)" || die "failed to create temporary directory for parallel state collection"
 
-  local batch_indices=()
-  local batch_size=0
-  for ((i = 0; i < repo_count; i++)); do
-    batch_indices+=("$i")
-    batch_size=$((batch_size + 1))
-    if [ "$batch_size" -ge "$jobs" ]; then
-      collect_repo_state_batch "${batch_indices[@]}"
-      batch_indices=()
-      batch_size=0
-    fi
+  # FIFO-based semaphore: keeps exactly $jobs workers running at all times.
+  # Unlike fixed batches, a slow repo doesn't stall the next batch from starting.
+  local sem_fifo="$STATE_TMP_DIR/sem"
+  mkfifo "$sem_fifo"
+  exec 3<>"$sem_fifo"
+  for ((i = 0; i < jobs; i++)); do
+    printf 'x' >&3
   done
 
-  if [ "$batch_size" -gt 0 ]; then
-    collect_repo_state_batch "${batch_indices[@]}"
-  fi
+  local pids=() idx state_file err_file
+  for ((idx = 0; idx < repo_count; idx++)); do
+    read -r -n 1 -u 3  # acquire a slot; blocks when all $jobs slots are taken
+    state_file="$STATE_TMP_DIR/repo.$idx.state"
+    err_file="$STATE_TMP_DIR/repo.$idx.err"
+    (
+      trap 'printf "x" >&3' EXIT  # release slot on exit, even on error
+      collect_repo_state "$idx" >/dev/null
+      write_repo_state "$idx" >"$state_file"
+    ) 2>"$err_file" &
+    pids+=("$!")
+  done
+
+  for pid in "${pids[@]}"; do
+    wait "$pid"
+  done
+  exec 3>&-
+
+  for ((idx = 0; idx < repo_count; idx++)); do
+    state_file="$STATE_TMP_DIR/repo.$idx.state"
+    err_file="$STATE_TMP_DIR/repo.$idx.err"
+    load_repo_state "$idx" "$state_file"
+    emit_repo_warnings "$err_file"
+  done
 }
 
 repo_error_count() {

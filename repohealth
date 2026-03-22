@@ -1293,6 +1293,19 @@ should_show_repo() {
   return 0
 }
 
+# Pad STR to visual width TARGET, storing result in RESULT_VAR.
+# bash printf "%-Ns" counts N as bytes, but ${#s} gives char count in UTF-8 locale.
+# This helper compensates so multi-byte chars (e.g. ↓ ↑ ↕) don't break alignment.
+pad_to_visual() {
+  local _str="$1" _target="$2" _var="$3"
+  local _char_len _byte_len _extra
+  _char_len=${#_str}
+  local LC_ALL=C
+  _byte_len=${#_str}
+  _extra=$((_byte_len - _char_len))
+  printf -v "$_var" "%-$((_target + _extra))s" "$_str"
+}
+
 print_default_view() {
   local shown_indices=()
   local -a cached_paths=()
@@ -1326,8 +1339,8 @@ print_default_view() {
     work_plain="${REPO_WORK_PLAIN[$i]}"
     printf -v padded_path "%-${max_path}s" "$path_plain"
     printf -v padded_type "%-${max_type}s" "$type_plain"
-    printf -v padded_push "%-${max_push}s" "$push_plain"
-    printf -v padded_work "%-${max_work}s" "$work_plain"
+    pad_to_visual "$push_plain" "$max_push" padded_push
+    pad_to_visual "$work_plain" "$max_work" padded_work
     if [ "$FANCY_MODE" -eq 1 ] && [ "$ENABLE_COLOR" -eq 1 ]; then
       printf '\033[2m%s\033[0m  \033[2m%s\033[0m  %s  \033[2m|\033[0m  %s\n' \
         "$padded_path" \

@@ -178,6 +178,7 @@ main() {
   assert_snapshot "default" "$workspace" --jobs 1
   assert_snapshot "dirty" "$workspace" --jobs 1 --dirty
   assert_snapshot "detail" "$workspace/ahead-dirty" --jobs 1 --detail
+  assert_snapshot "detail-fancy" "$workspace/ahead-dirty" --jobs 1 --detail --fancy
   assert_jobs_consistent "$workspace"
 
   printf 'All snapshot tests passed.\n'

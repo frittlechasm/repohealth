@@ -520,18 +520,6 @@ collect_jj_drafts() {
   printf '%s' "$output"
 }
 
-count_jj_outgoing_commits() {
-  local root="$1"
-  local remote="${2:-}"
-  local revset
-  local output
-
-  revset="$(jj_outgoing_revset "$remote")"
-
-  output="$(jj -R "$root" log -r "$revset" --no-graph -T 'commit_id.short() ++ "\n"' 2>/dev/null || true)"
-  count_nonempty_lines "$output"
-}
-
 jj_outgoing_revset() {
   local remote="${1:-}"
   if [ -n "$remote" ]; then
@@ -539,6 +527,14 @@ jj_outgoing_revset() {
   else
     printf '::bookmarks() ~ ::remote_bookmarks()'
   fi
+}
+
+count_jj_outgoing_commits() {
+  local root="$1"
+  local revset="$2"
+  local output
+  output="$(jj -R "$root" log -r "$revset" --count 2>/dev/null || true)"
+  first_nonempty_line "$output"
 }
 
 collect_jj_work_state() {
@@ -583,9 +579,9 @@ collect_jj_work_state() {
 build_jj_outgoing_detail() {
   local root="$1"
   local dry_run_output="$2"
-  local outgoing_revset="${3:-}"
+  local commit_detail="${3:-}"
   local result=""
-  local line action bookmark summary commit_detail
+  local line action bookmark summary
   while IFS= read -r line; do
     case "$line" in
     'Changes to push to '* | 'Dry-run requested, not pushing.')
@@ -610,15 +606,11 @@ build_jj_outgoing_detail() {
 $dry_run_output
 EOF
 
-  if [ -n "$outgoing_revset" ]; then
-    commit_detail="$(jj -R "$root" log -r "$outgoing_revset" --reversed --stat --no-graph -T 'commit_id.short() ++ " " ++ description.first_line() ++ "\n"' 2>/dev/null || true)"
-    commit_detail="$(trim_trailing_newlines "$commit_detail")"
-    if [ -n "$commit_detail" ]; then
-      if [ -n "$result" ]; then
-        result="${result}"$'\n'
-      fi
-      result="${result}Commits:"$'\n'"$commit_detail"
+  if [ -n "$commit_detail" ]; then
+    if [ -n "$result" ]; then
+      result="${result}"$'\n'
     fi
+    result="${result}Commits:"$'\n'"$commit_detail"
   fi
 
   printf '%s' "$result"
@@ -683,7 +675,7 @@ collect_jj_push_state() {
 
   local detail=""
   if [ "$action_count" -gt 0 ]; then
-    local selected_remote outgoing_count outgoing_revset
+    local selected_remote outgoing_count outgoing_revset commit_detail
     selected_remote="$(printf '%s\n' "$dry_run_output" | awk '
       /^Changes to push to / {
         line = $0
@@ -694,11 +686,13 @@ collect_jj_push_state() {
       }
     ')"
     outgoing_revset="$(jj_outgoing_revset "$selected_remote")"
-    outgoing_count="$(count_jj_outgoing_commits "$root" "$selected_remote")"
+    commit_detail="$(jj -R "$root" log -r "$outgoing_revset" --reversed --stat --no-graph -T 'commit_id.short() ++ " " ++ description.first_line() ++ "\n"' 2>/dev/null || true)"
+    commit_detail="$(trim_trailing_newlines "$commit_detail")"
+    outgoing_count="$(count_jj_outgoing_commits "$root" "$outgoing_revset")"
     if [ -z "$outgoing_count" ] || ! is_integer "$outgoing_count" || [ "$outgoing_count" -eq 0 ]; then
       outgoing_count="$action_count"
     fi
-    detail="$(build_jj_outgoing_detail "$root" "$dry_run_output" "$outgoing_revset")"
+    detail="$(build_jj_outgoing_detail "$root" "$dry_run_output" "$commit_detail")"
     if [ "$draft_count" -gt 0 ]; then
       set_push_status "$idx" "outgoing" "↑ ${outgoing_count} outgoing (+${draft_count} draft)" "" "$detail"
     else

@@ -21,6 +21,7 @@ HAVE_JJ=0
 FD_CMD=""
 ENABLE_COLOR=0
 TERM_COLS_CACHE=""
+COLLECT_DETAIL_DATA=0
 
 REPO_ROOTS=()
 REPO_TYPES=()
@@ -945,11 +946,13 @@ collect_git_work_state() {
     [ -z "$line" ] && continue
     if [ "${line#\?\? }" != "$line" ]; then
       untracked=$((untracked + 1))
-      path="${line#\?\? }"
-      if [ -n "$untracked_list" ]; then
-        untracked_list="${untracked_list}"$'\n'"$path"
-      else
-        untracked_list="$path"
+      if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
+        path="${line#\?\? }"
+        if [ -n "$untracked_list" ]; then
+          untracked_list="${untracked_list}"$'\n'"$path"
+        else
+          untracked_list="$path"
+        fi
       fi
     else
       modified=$((modified + 1))
@@ -962,7 +965,7 @@ EOF
   display="$(join_counts "$modified" "$untracked")"
 
   local detail=""
-  if [ "$modified" -gt 0 ]; then
+  if [ "$COLLECT_DETAIL_DATA" -eq 1 ] && [ "$modified" -gt 0 ]; then
     local has_head=1
     if ! git -C "$root" rev-parse --verify HEAD >/dev/null 2>&1; then
       has_head=0
@@ -1027,7 +1030,7 @@ EOF
     fi
   else
     local push_detail=""
-    if [ "$ahead" -gt 0 ]; then
+    if [ "$COLLECT_DETAIL_DATA" -eq 1 ] && [ "$ahead" -gt 0 ]; then
       push_detail="$(build_git_outgoing_detail "$root" "$upstream")"
     fi
     if [ "$ahead" -gt 0 ] && [ "$behind" -gt 0 ]; then
@@ -1049,11 +1052,13 @@ EOF
       "# "*) ;;
       "? "*)
         untracked=$((untracked + 1))
-        path="${line#? }"
-        if [ -n "$untracked_list" ]; then
-          untracked_list="${untracked_list}"$'\n'"$path"
-        else
-          untracked_list="$path"
+        if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
+          path="${line#? }"
+          if [ -n "$untracked_list" ]; then
+            untracked_list="${untracked_list}"$'\n'"$path"
+          else
+            untracked_list="$path"
+          fi
         fi
         ;;
       "1 "* | "2 "* | "u "*) modified=$((modified + 1)) ;;
@@ -1063,7 +1068,7 @@ $status_output
 EOF
 
   local work_detail=""
-  if [ "$modified" -gt 0 ]; then
+  if [ "$COLLECT_DETAIL_DATA" -eq 1 ] && [ "$modified" -gt 0 ]; then
     if [ "$oid" = "(initial)" ]; then
       work_detail="$(collect_git_unborn_worktree_numstat "$root")"
     else
@@ -1128,12 +1133,23 @@ EOF
   printf '%s' "$result"
 }
 
+jj_draft_revset() {
+  printf 'reachable(@, mutable()) ~ ::bookmarks() ~ @'
+}
+
 collect_jj_drafts() {
   local root="$1"
   local output
-  output="$(jj -R "$root" log -r 'reachable(@, mutable()) ~ ::bookmarks() ~ @' --no-graph -T 'change_id.short() ++ " " ++ description.first_line() ++ "\n"' 2>/dev/null || true)"
+  output="$(jj -R "$root" log -r "$(jj_draft_revset)" --no-graph -T 'change_id.short() ++ " " ++ description.first_line() ++ "\n"' 2>/dev/null || true)"
   output="$(trim_trailing_newlines "$output")"
   printf '%s' "$output"
+}
+
+count_jj_drafts() {
+  local root="$1"
+  local output
+  output="$(jj -R "$root" log -r "$(jj_draft_revset)" --count 2>/dev/null || true)"
+  first_nonempty_line "$output"
 }
 
 jj_outgoing_revset() {
@@ -1181,10 +1197,11 @@ collect_jj_work_state() {
     modified=0
   fi
 
-  local detail
-  detail="$(collect_jj_stat_tsv "$root" '@')"
-
   if [ "$modified" -gt 0 ]; then
+    local detail=""
+    if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
+      detail="$(collect_jj_stat_tsv "$root" '@')"
+    fi
     set_work_status "$idx" "changes" "* ${modified} modified" "" "$detail"
   else
     set_work_status "$idx" "clean" "- clean"
@@ -1228,10 +1245,17 @@ collect_jj_push_state() {
   local idx="$1"
   local root="$2"
 
-  local draft_detail draft_count
-  draft_detail="$(collect_jj_drafts "$root")"
-  draft_count="$(count_nonempty_lines "$draft_detail")"
-  set_draft_detail "$idx" "$draft_detail"
+  local draft_detail="" draft_count=""
+  if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
+    draft_detail="$(collect_jj_drafts "$root")"
+    draft_count="$(count_nonempty_lines "$draft_detail")"
+    set_draft_detail "$idx" "$draft_detail"
+  else
+    draft_count="$(count_jj_drafts "$root")"
+  fi
+  if [ -z "$draft_count" ] || ! is_integer "$draft_count"; then
+    draft_count=0
+  fi
 
   local remote_output remote_count
   remote_output="$(jj -R "$root" git remote list 2>/dev/null || true)"
@@ -1294,15 +1318,17 @@ collect_jj_push_state() {
       }
     ')"
     outgoing_revset="$(jj_outgoing_revset "$selected_remote")"
-    commit_detail="$(build_jj_commit_detail "$root" "$outgoing_revset")"
     outgoing_count="$(count_jj_outgoing_commits "$root" "$outgoing_revset")"
     if [ -z "$outgoing_count" ] || ! is_integer "$outgoing_count" || [ "$outgoing_count" -eq 0 ]; then
       outgoing_count="$action_count"
     fi
-    if [ -n "$commit_detail" ]; then
-      detail="$commit_detail"
-    else
-      detail="$(build_jj_outgoing_detail "$root" "$dry_run_output")"
+    if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
+      commit_detail="$(build_jj_commit_detail "$root" "$outgoing_revset")"
+      if [ -n "$commit_detail" ]; then
+        detail="$commit_detail"
+      else
+        detail="$(build_jj_outgoing_detail "$root" "$dry_run_output")"
+      fi
     fi
     if [ "$draft_count" -gt 0 ]; then
       set_push_status "$idx" "outgoing" "↑ ${outgoing_count} outgoing (+${draft_count} draft)" "" "$detail"
@@ -1988,6 +2014,7 @@ main() {
     ENABLE_COLOR=1
   fi
   FANCY_MODE="$fancy_mode"
+  COLLECT_DETAIL_DATA="$DETAIL_MODE"
   if [ -z "$PARALLEL_JOBS" ]; then
     PARALLEL_JOBS="$(default_parallel_jobs)"
   fi

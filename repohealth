@@ -18,6 +18,7 @@ STATE_TMP_DIR=""
 
 HAVE_GIT=0
 HAVE_JJ=0
+FD_CMD=""
 ENABLE_COLOR=0
 TERM_COLS_CACHE=""
 
@@ -401,47 +402,67 @@ is_linked_worktree_gitfile() {
 }
 
 discover_repos() {
-  local find_cmd
-  find_cmd=(find "$SCAN_ROOT")
-  if [ -n "$MAX_DEPTH" ]; then
-    find_cmd+=(-maxdepth "$MAX_DEPTH")
+  local scan_cmd
+  if [ -n "$FD_CMD" ]; then
+    scan_cmd=("$FD_CMD" --hidden --no-ignore --print0)
+    local excl
+    for excl in node_modules vendor bower_components target __pycache__ .svn .hg; do
+      scan_cmd+=(--exclude "$excl")
+    done
+    if [ -n "$MAX_DEPTH" ]; then
+      scan_cmd+=(--max-depth "$MAX_DEPTH")
+    fi
+    scan_cmd+=(-t d -t f '^\.(git|jj)$' "$SCAN_ROOT")
+  else
+    scan_cmd=(find "$SCAN_ROOT")
+    if [ -n "$MAX_DEPTH" ]; then
+      scan_cmd+=(-maxdepth "$MAX_DEPTH")
+    fi
+    scan_cmd+=(
+      "("
+      -type d
+      "("
+      -name node_modules -o
+      -name vendor -o
+      -name bower_components -o
+      -name target -o
+      -name __pycache__ -o
+      -name .svn -o
+      -name .hg
+      ")"
+      -prune
+      ")"
+      -o
+      "("
+      -type d
+      "("
+      -name .git -o
+      -name .jj
+      ")"
+      -print0
+      -prune
+      ")"
+      -o
+      "("
+      -type f
+      -name .git
+      -print0
+      ")"
+    )
   fi
-  find_cmd+=(
-    "("
-    -type d
-    "("
-    -name node_modules -o
-    -name vendor -o
-    -name bower_components -o
-    -name target -o
-    -name __pycache__ -o
-    -name .svn -o
-    -name .hg
-    ")"
-    -prune
-    ")"
-    -o
-    "("
-    -type d
-    "("
-    -name .git -o
-    -name .jj
-    ")"
-    -print0
-    -prune
-    ")"
-    -o
-    "("
-    -type f
-    -name .git
-    -print0
-    ")"
-  )
 
   local marker candidate type normalized_root
   while IFS= read -r -d '' marker; do
-    type="git"
+    # fd appends a trailing slash to directory results; strip it for consistent handling.
+    marker="${marker%/}"
     candidate="$(dirname "$marker")"
+    # fd traverses into .git dirs; skip markers nested inside them.
+    if [ -n "$FD_CMD" ]; then
+      case "$candidate" in
+        */.git | */.git/*) continue ;;
+      esac
+    fi
+    type="git"
     if [ "$(basename "$marker")" = ".jj" ]; then
       type="jj"
     elif [ -f "$marker" ] && is_linked_worktree_gitfile "$marker"; then
@@ -484,7 +505,7 @@ discover_repos() {
     fi
 
     add_repo "$normalized_root" "$type"
-  done < <("${find_cmd[@]}")
+  done < <("${scan_cmd[@]}")
 }
 
 sort_repos() {
@@ -1923,6 +1944,11 @@ main() {
   fi
   if command_exists jj; then
     HAVE_JJ=1
+  fi
+  if command_exists fd; then
+    FD_CMD="fd"
+  elif command_exists fdfind; then
+    FD_CMD="fdfind"
   fi
   if [ "$HAVE_GIT" -eq 0 ] && [ "$HAVE_JJ" -eq 0 ]; then
     die "neither git nor jj is available"

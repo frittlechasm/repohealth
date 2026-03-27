@@ -213,23 +213,64 @@ assert_default_jobs_floor() {
   [ "$max_active" -ge 8 ] || fail "expected auto-detected default jobs floor to reach at least 8 workers, saw $max_active"
 }
 
-assert_minimal_rejects_detail() {
+assert_detail_alias_matches_output_precedence() {
   local workspace="$1"
-  local stdout_file="$TMP_ROOT/minimal-detail.stdout"
-  local stderr_file="$TMP_ROOT/minimal-detail.stderr"
-  local status_file="$TMP_ROOT/minimal-detail.status"
-  local status=0
+  local alias_table_stdout="$TMP_ROOT/detail-alias-table.stdout"
+  local alias_table_stderr="$TMP_ROOT/detail-alias-table.stderr"
+  local alias_table_status="$TMP_ROOT/detail-alias-table.status"
+  local explicit_table_stdout="$TMP_ROOT/detail-explicit-table.stdout"
+  local explicit_table_stderr="$TMP_ROOT/detail-explicit-table.stderr"
+  local explicit_table_status="$TMP_ROOT/detail-explicit-table.status"
+  local alias_minimal_stdout="$TMP_ROOT/detail-alias-minimal.stdout"
+  local alias_minimal_stderr="$TMP_ROOT/detail-alias-minimal.stderr"
+  local alias_minimal_status="$TMP_ROOT/detail-alias-minimal.status"
+  local explicit_minimal_stdout="$TMP_ROOT/detail-explicit-minimal.stdout"
+  local explicit_minimal_stderr="$TMP_ROOT/detail-explicit-minimal.stderr"
+  local explicit_minimal_status="$TMP_ROOT/detail-explicit-minimal.status"
+  local alias_json_stdout="$TMP_ROOT/detail-alias-json.stdout"
+  local alias_json_stderr="$TMP_ROOT/detail-alias-json.stderr"
+  local alias_json_status="$TMP_ROOT/detail-alias-json.status"
+  local explicit_json_stdout="$TMP_ROOT/detail-explicit-json.stdout"
+  local explicit_json_stderr="$TMP_ROOT/detail-explicit-json.stderr"
+  local explicit_json_status="$TMP_ROOT/detail-explicit-json.status"
 
-  set +e
-  env LC_ALL=C TZ=UTC COLUMNS=80 NO_COLOR=1 "$CLI" --output minimal --detail "$workspace" >"$stdout_file" 2>"$stderr_file"
-  status=$?
-  set -e
-  printf '%s\n' "$status" >"$status_file"
+  run_cli "$alias_table_stdout" "$alias_table_stderr" "$alias_table_status" --detail --output table "$workspace"
+  run_cli "$explicit_table_stdout" "$explicit_table_stderr" "$explicit_table_status" --output detail --output table "$workspace"
 
-  [ "$status" -ne 0 ] || fail "expected --output minimal --detail to fail"
-  grep -F -- '--detail is not supported with --output minimal' "$stderr_file" >/dev/null ||
-    fail "expected minimal detail error message"
-  [ ! -s "$stdout_file" ] || fail "expected minimal detail failure to avoid stdout output"
+  [ "$(cat "$alias_table_status")" -eq 0 ] || fail "expected --detail --output table to succeed"
+  [ "$(cat "$explicit_table_status")" -eq 0 ] || fail "expected --output detail --output table to succeed"
+  [ ! -s "$alias_table_stderr" ] || fail "expected --detail --output table to avoid stderr"
+  [ ! -s "$explicit_table_stderr" ] || fail "expected --output detail --output table to avoid stderr"
+  cmp -s "$alias_table_stdout" "$explicit_table_stdout" || fail "expected table output to match for alias and explicit detail forms"
+  grep -F 'ahead-dirty     [git]  ↑ 1 outgoing' "$alias_table_stdout" >/dev/null ||
+    fail "expected later --output table to win over --detail"
+  if grep -F '   ↑ Outgoing' "$alias_table_stdout" >/dev/null 2>&1; then
+    fail "expected table output to avoid detail sections"
+  fi
+
+  run_cli "$alias_minimal_stdout" "$alias_minimal_stderr" "$alias_minimal_status" --detail --output minimal "$workspace"
+  run_cli "$explicit_minimal_stdout" "$explicit_minimal_stderr" "$explicit_minimal_status" --output detail --output minimal "$workspace"
+
+  [ "$(cat "$alias_minimal_status")" -eq 0 ] || fail "expected --detail --output minimal to succeed"
+  [ "$(cat "$explicit_minimal_status")" -eq 0 ] || fail "expected --output detail --output minimal to succeed"
+  [ ! -s "$alias_minimal_stderr" ] || fail "expected --detail --output minimal to avoid stderr"
+  [ ! -s "$explicit_minimal_stderr" ] || fail "expected --output detail --output minimal to avoid stderr"
+  cmp -s "$alias_minimal_stdout" "$explicit_minimal_stdout" || fail "expected minimal output to match for alias and explicit detail forms"
+  grep -E '^ahead-dirty +g +↑1 O +\*1 M \+1 U$' "$alias_minimal_stdout" >/dev/null ||
+    fail "expected later --output minimal to win over --detail"
+
+  run_cli "$alias_json_stdout" "$alias_json_stderr" "$alias_json_status" --detail --output json "$workspace/ahead-dirty"
+  run_cli "$explicit_json_stdout" "$explicit_json_stderr" "$explicit_json_status" --output detail --output json "$workspace/ahead-dirty"
+
+  [ "$(cat "$alias_json_status")" -eq 0 ] || fail "expected --detail --output json to succeed"
+  [ "$(cat "$explicit_json_status")" -eq 0 ] || fail "expected --output detail --output json to succeed"
+  [ ! -s "$alias_json_stderr" ] || fail "expected --detail --output json to avoid stderr"
+  [ ! -s "$explicit_json_stderr" ] || fail "expected --output detail --output json to avoid stderr"
+  cmp -s "$alias_json_stdout" "$explicit_json_stdout" || fail "expected json output to match for alias and explicit detail forms"
+  grep -F '"detail": [' "$alias_json_stdout" >/dev/null ||
+    fail "expected later --output json to preserve requested detail fields"
+  grep -F '"untracked": [' "$alias_json_stdout" >/dev/null ||
+    fail "expected json detail fields to include untracked entries"
 }
 
 assert_minimal_uses_repo_basename() {
@@ -479,7 +520,7 @@ main() {
   assert_snapshot "format-json-detail" "$workspace/ahead-dirty" --jobs 1 --output json --detail
   assert_jobs_consistent "$workspace"
   assert_default_jobs_floor
-  assert_minimal_rejects_detail "$workspace"
+  assert_detail_alias_matches_output_precedence "$workspace"
   assert_minimal_uses_repo_basename
   assert_jj_discovery_prefers_jj
   assert_jj_work_state_uses_diff_only

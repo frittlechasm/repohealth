@@ -76,6 +76,24 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
+set_output_format() {
+  local format="$1"
+  OUTPUT="$format"
+  case "$format" in
+  detail | fancy-detail) DETAIL_MODE=1 ;;
+  table | minimal) DETAIL_MODE=0 ;;
+  json) ;;
+  *) die "unsupported output: $format (supported: table, minimal, detail, fancy-detail, json)" ;;
+  esac
+}
+
+request_detail_output() {
+  DETAIL_MODE=1
+  if [ "$OUTPUT" != "json" ]; then
+    OUTPUT="detail"
+  fi
+}
+
 json_escape() {
   local _var="$1" _s="$2"
   _s="${_s//\\/\\\\}"
@@ -2135,18 +2153,14 @@ parse_args() {
       ;;
     -o | --output)
       [ "$#" -ge 2 ] || die "--output requires a value"
-      OUTPUT="$2"
-      case "$OUTPUT" in
-      table | minimal | detail | fancy-detail | json) ;;
-      *) die "unsupported output: $OUTPUT (supported: table, minimal, detail, fancy-detail, json)" ;;
-      esac
+      set_output_format "$2"
       shift
       ;;
     -N | --no-color)
       NO_COLOR_FLAG=1
       ;;
     -D | --detail)
-      DETAIL_MODE=1
+      request_detail_output
       ;;
     -h | --help)
       usage
@@ -2170,13 +2184,6 @@ parse_args() {
 main() {
   parse_args "$@"
   trap cleanup_temp_state EXIT
-
-  if [ "$OUTPUT" = "detail" ] || [ "$OUTPUT" = "fancy-detail" ]; then
-    DETAIL_MODE=1
-  fi
-  if [ "$OUTPUT" = "minimal" ] && [ "$DETAIL_MODE" -eq 1 ]; then
-    die "--detail is not supported with --output minimal"
-  fi
 
   if [ "${#SCAN_ROOTS[@]}" -eq 0 ]; then
     SCAN_ROOTS=(".")
@@ -2229,7 +2236,7 @@ main() {
   elif [ "$OUTPUT" = "minimal" ]; then
     print_minimal_view
     print_summary
-  elif [ "$DETAIL_MODE" -eq 1 ]; then
+  elif [ "$OUTPUT" = "detail" ] || [ "$OUTPUT" = "fancy-detail" ]; then
     print_detail_view
     print_summary
   else

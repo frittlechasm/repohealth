@@ -32,6 +32,8 @@ REPO_PUSH_KIND=()
 REPO_PUSH_PLAIN=()
 REPO_PUSH_NOTE=()
 REPO_PUSH_DETAIL=()
+REPO_PUSH_PRIMARY_COUNT=()
+REPO_PUSH_SECONDARY_COUNT=()
 
 REPO_WORK_KIND=()
 REPO_WORK_PLAIN=()
@@ -39,6 +41,8 @@ REPO_WORK_NOTE=()
 REPO_WORK_DETAIL=()
 REPO_UNTRACKED_DETAIL=()
 REPO_DRAFT_DETAIL=()
+REPO_WORK_MODIFIED_COUNT=()
+REPO_WORK_UNTRACKED_COUNT=()
 
 usage() {
   cat <<EOF
@@ -53,7 +57,7 @@ Options:
   -r, --remote NAME     Override the remote used for JJ push checks
   -j, --jobs N          Collect repo state in parallel with up to N workers
   -e, --exclude PATTERN Exclude repos whose path matches the ERE (may be repeated)
-  -o, --output FORMAT   Output format: table, detail, json (default: table)
+  -o, --output FORMAT   Output format: table, minimal, detail, json (default: table)
   -t, --theme THEME     Human-output theme: default, fancy
   -N, --no-color        Disable ANSI color output
   -D, --detail          Alias for --output detail; with --output json, include detail fields
@@ -372,12 +376,16 @@ init_repo_slot() {
   REPO_PUSH_PLAIN+=("")
   REPO_PUSH_NOTE+=("")
   REPO_PUSH_DETAIL+=("")
+  REPO_PUSH_PRIMARY_COUNT+=(0)
+  REPO_PUSH_SECONDARY_COUNT+=(0)
   REPO_WORK_KIND+=("")
   REPO_WORK_PLAIN+=("")
   REPO_WORK_NOTE+=("")
   REPO_WORK_DETAIL+=("")
   REPO_UNTRACKED_DETAIL+=("")
   REPO_DRAFT_DETAIL+=("")
+  REPO_WORK_MODIFIED_COUNT+=(0)
+  REPO_WORK_UNTRACKED_COUNT+=(0)
 }
 
 add_repo() {
@@ -529,10 +537,14 @@ set_push_status() {
   local text="$3"
   local note="${4:-}"
   local detail="${5:-}"
+  local primary_count="${6:-0}"
+  local secondary_count="${7:-0}"
   REPO_PUSH_KIND[$idx]="$kind"
   REPO_PUSH_PLAIN[$idx]="$text"
   REPO_PUSH_NOTE[$idx]="$note"
   REPO_PUSH_DETAIL[$idx]="$detail"
+  REPO_PUSH_PRIMARY_COUNT[$idx]="$primary_count"
+  REPO_PUSH_SECONDARY_COUNT[$idx]="$secondary_count"
 }
 
 set_work_status() {
@@ -542,11 +554,15 @@ set_work_status() {
   local note="${4:-}"
   local detail="${5:-}"
   local untracked="${6:-}"
+  local modified_count="${7:-0}"
+  local untracked_count="${8:-0}"
   REPO_WORK_KIND[$idx]="$kind"
   REPO_WORK_PLAIN[$idx]="$text"
   REPO_WORK_NOTE[$idx]="$note"
   REPO_WORK_DETAIL[$idx]="$detail"
   REPO_UNTRACKED_DETAIL[$idx]="$untracked"
+  REPO_WORK_MODIFIED_COUNT[$idx]="$modified_count"
+  REPO_WORK_UNTRACKED_COUNT[$idx]="$untracked_count"
 }
 
 set_draft_detail() {
@@ -984,7 +1000,7 @@ EOF
   fi
 
   if [ "$modified" -gt 0 ] || [ "$untracked" -gt 0 ]; then
-    set_work_status "$idx" "changes" "$display" "" "$detail" "$untracked_list"
+    set_work_status "$idx" "changes" "$display" "" "$detail" "$untracked_list" "$modified" "$untracked"
   else
     set_work_status "$idx" "clean" "- clean"
   fi
@@ -1039,11 +1055,11 @@ EOF
       push_detail="$(build_git_outgoing_detail "$root" "$upstream")"
     fi
     if [ "$ahead" -gt 0 ] && [ "$behind" -gt 0 ]; then
-      set_push_status "$idx" "diverged" "↕ ${ahead} ahead, ${behind} behind" "behind remote by ${behind} commit(s)" "$push_detail"
+      set_push_status "$idx" "diverged" "↕ ${ahead} ahead, ${behind} behind" "behind remote by ${behind} commit(s)" "$push_detail" "$ahead" "$behind"
     elif [ "$ahead" -gt 0 ]; then
-      set_push_status "$idx" "outgoing" "↑ ${ahead} outgoing" "" "$push_detail"
+      set_push_status "$idx" "outgoing" "↑ ${ahead} outgoing" "" "$push_detail" "$ahead"
     elif [ "$behind" -gt 0 ]; then
-      set_push_status "$idx" "behind" "↓ ${behind} behind" "behind remote — pull required"
+      set_push_status "$idx" "behind" "↓ ${behind} behind" "behind remote — pull required" "" "$behind"
     else
       set_push_status "$idx" "clean" "- up to date"
     fi
@@ -1084,7 +1100,7 @@ EOF
   local display
   display="$(join_counts "$modified" "$untracked")"
   if [ "$modified" -gt 0 ] || [ "$untracked" -gt 0 ]; then
-    set_work_status "$idx" "changes" "$display" "" "$work_detail" "$untracked_list"
+    set_work_status "$idx" "changes" "$display" "" "$work_detail" "$untracked_list" "$modified" "$untracked"
   else
     set_work_status "$idx" "clean" "- clean"
   fi
@@ -1204,7 +1220,7 @@ collect_jj_work_state() {
     if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
       detail="$(collect_jj_stat_tsv "$root" '@')"
     fi
-    set_work_status "$idx" "changes" "* ${modified} modified" "" "$detail"
+    set_work_status "$idx" "changes" "* ${modified} modified" "" "$detail" "" "$modified" 0
   else
     set_work_status "$idx" "clean" "- clean"
   fi
@@ -1267,7 +1283,7 @@ collect_jj_push_state() {
       draft_loaded=1
     fi
     if [ "$draft_count" -gt 0 ]; then
-      set_push_status "$idx" "draft" "~ ${draft_count} draft only" "draft commits are not pushable until bookmarked"
+      set_push_status "$idx" "draft" "~ ${draft_count} draft only" "draft commits are not pushable until bookmarked" "" "$draft_count"
     else
       set_push_status "$idx" "question" "? no remote" "no JJ remote configured"
     fi
@@ -1349,9 +1365,9 @@ collect_jj_push_state() {
       draft_loaded=1
     fi
     if [ "$draft_count" -gt 0 ]; then
-      set_push_status "$idx" "outgoing" "↑ ${outgoing_count} outgoing (+${draft_count} draft)" "" "$detail"
+      set_push_status "$idx" "outgoing" "↑ ${outgoing_count} outgoing (+${draft_count} draft)" "" "$detail" "$outgoing_count" "$draft_count"
     else
-      set_push_status "$idx" "outgoing" "↑ ${outgoing_count} outgoing" "" "$detail"
+      set_push_status "$idx" "outgoing" "↑ ${outgoing_count} outgoing" "" "$detail" "$outgoing_count"
     fi
     return
   fi
@@ -1381,7 +1397,7 @@ collect_jj_push_state() {
     draft_loaded=1
   fi
   if [ "$draft_count" -gt 0 ]; then
-    set_push_status "$idx" "draft" "~ ${draft_count} draft only" "draft commits are not pushable until bookmarked"
+    set_push_status "$idx" "draft" "~ ${draft_count} draft only" "draft commits are not pushable until bookmarked" "" "$draft_count"
     return
   fi
 
@@ -1429,12 +1445,16 @@ write_repo_state() {
   printf 'REPO_PUSH_PLAIN[%s]=%q\n' "$idx" "${REPO_PUSH_PLAIN[$idx]}"
   printf 'REPO_PUSH_NOTE[%s]=%q\n' "$idx" "${REPO_PUSH_NOTE[$idx]}"
   printf 'REPO_PUSH_DETAIL[%s]=%q\n' "$idx" "${REPO_PUSH_DETAIL[$idx]}"
+  printf 'REPO_PUSH_PRIMARY_COUNT[%s]=%q\n' "$idx" "${REPO_PUSH_PRIMARY_COUNT[$idx]}"
+  printf 'REPO_PUSH_SECONDARY_COUNT[%s]=%q\n' "$idx" "${REPO_PUSH_SECONDARY_COUNT[$idx]}"
   printf 'REPO_WORK_KIND[%s]=%q\n' "$idx" "${REPO_WORK_KIND[$idx]}"
   printf 'REPO_WORK_PLAIN[%s]=%q\n' "$idx" "${REPO_WORK_PLAIN[$idx]}"
   printf 'REPO_WORK_NOTE[%s]=%q\n' "$idx" "${REPO_WORK_NOTE[$idx]}"
   printf 'REPO_WORK_DETAIL[%s]=%q\n' "$idx" "${REPO_WORK_DETAIL[$idx]}"
   printf 'REPO_UNTRACKED_DETAIL[%s]=%q\n' "$idx" "${REPO_UNTRACKED_DETAIL[$idx]}"
   printf 'REPO_DRAFT_DETAIL[%s]=%q\n' "$idx" "${REPO_DRAFT_DETAIL[$idx]}"
+  printf 'REPO_WORK_MODIFIED_COUNT[%s]=%q\n' "$idx" "${REPO_WORK_MODIFIED_COUNT[$idx]}"
+  printf 'REPO_WORK_UNTRACKED_COUNT[%s]=%q\n' "$idx" "${REPO_WORK_UNTRACKED_COUNT[$idx]}"
 }
 
 load_repo_state() {
@@ -1595,6 +1615,149 @@ print_default_view() {
         "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
         "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
     fi
+  done
+}
+
+format_vcs_type_minimal() {
+  local idx="$1"
+  case "${REPO_TYPES[$idx]}" in
+  git)
+    printf 'g'
+    ;;
+  jj)
+    printf 'j'
+    ;;
+  *)
+    printf '?'
+    ;;
+  esac
+}
+
+format_repo_name_minimal() {
+  local idx="$1"
+  local root="${REPO_ROOTS[$idx]%/}"
+  local name
+  if [ -z "$root" ]; then
+    printf '/'
+    return
+  fi
+  name="${root##*/}"
+  if [ -z "$name" ]; then
+    printf '%s' "$root"
+  else
+    printf '%s' "$name"
+  fi
+}
+
+format_push_minimal() {
+  local idx="$1"
+  local primary="${REPO_PUSH_PRIMARY_COUNT[$idx]:-0}"
+  local secondary="${REPO_PUSH_SECONDARY_COUNT[$idx]:-0}"
+
+  case "${REPO_PUSH_KIND[$idx]}" in
+  clean)
+    printf -- '-'
+    ;;
+  outgoing)
+    if [ "$secondary" -gt 0 ]; then
+      printf '↑%s O +%s D' "$primary" "$secondary"
+    else
+      printf '↑%s O' "$primary"
+    fi
+    ;;
+  behind)
+    printf '↓%s B' "$primary"
+    ;;
+  diverged)
+    printf '↕%s O /%s B' "$primary" "$secondary"
+    ;;
+  draft)
+    printf '~%s D' "$primary"
+    ;;
+  question)
+    printf '?'
+    ;;
+  push_failed | error | unavailable)
+    printf '!'
+    ;;
+  *)
+    printf '!'
+    ;;
+  esac
+}
+
+format_work_minimal() {
+  local idx="$1"
+  local modified="${REPO_WORK_MODIFIED_COUNT[$idx]:-0}"
+  local untracked="${REPO_WORK_UNTRACKED_COUNT[$idx]:-0}"
+
+  case "${REPO_WORK_KIND[$idx]}" in
+  clean)
+    printf -- '-'
+    ;;
+  changes)
+    if [ "$modified" -gt 0 ] && [ "$untracked" -gt 0 ]; then
+      printf '*%s M +%s U' "$modified" "$untracked"
+    elif [ "$modified" -gt 0 ]; then
+      printf '*%s M' "$modified"
+    elif [ "$untracked" -gt 0 ]; then
+      printf '+%s U' "$untracked"
+    else
+      printf -- '-'
+    fi
+    ;;
+  error | unavailable)
+    printf '!'
+    ;;
+  *)
+    printf '!'
+    ;;
+  esac
+}
+
+print_minimal_view() {
+  local shown_indices=()
+  local -a cached_paths=() cached_types=() cached_push=() cached_work=()
+  local i path_plain type_plain push_plain work_plain
+  local max_path=0 max_type=0 max_push=0 max_work=0
+  for ((i = 0; i < ${#REPO_ROOTS[@]}; i++)); do
+    if ! should_show_repo "$i"; then
+      continue
+    fi
+    shown_indices+=("$i")
+    path_plain="$(format_repo_name_minimal "$i")"
+    type_plain="$(format_vcs_type_minimal "$i")"
+    push_plain="$(format_push_minimal "$i")"
+    work_plain="$(format_work_minimal "$i")"
+    cached_paths[$i]="$path_plain"
+    cached_types[$i]="$type_plain"
+    cached_push[$i]="$push_plain"
+    cached_work[$i]="$work_plain"
+    [ "${#path_plain}" -gt "$max_path" ] && max_path="${#path_plain}"
+    [ "${#type_plain}" -gt "$max_type" ] && max_type="${#type_plain}"
+    [ "${#push_plain}" -gt "$max_push" ] && max_push="${#push_plain}"
+    [ "${#work_plain}" -gt "$max_work" ] && max_work="${#work_plain}"
+  done
+
+  if [ "${#shown_indices[@]}" -eq 0 ]; then
+    return
+  fi
+
+  local padded_path padded_type padded_push padded_work
+  for i in "${shown_indices[@]}"; do
+    path_plain="${cached_paths[$i]}"
+    type_plain="${cached_types[$i]}"
+    push_plain="${cached_push[$i]}"
+    work_plain="${cached_work[$i]}"
+    printf -v padded_path "%-${max_path}s" "$path_plain"
+    printf -v padded_type "%-${max_type}s" "$type_plain"
+    pad_to_visual "$push_plain" "$max_push" padded_push
+    pad_to_visual "$work_plain" "$max_work" padded_work
+    printf '%s  %s  %s  %s\n' \
+      "$padded_path" \
+      "$padded_type" \
+      "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
+      "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
   done
 }
 
@@ -1976,8 +2139,8 @@ parse_args() {
       [ "$#" -ge 2 ] || die "--output requires a value"
       OUTPUT="$2"
       case "$OUTPUT" in
-      table | detail | json) ;;
-      *) die "unsupported output: $OUTPUT (supported: table, detail, json)" ;;
+      table | minimal | detail | json) ;;
+      *) die "unsupported output: $OUTPUT (supported: table, minimal, detail, json)" ;;
       esac
       shift
       ;;
@@ -2021,6 +2184,9 @@ main() {
 
   if [ "$OUTPUT" = "detail" ]; then
     DETAIL_MODE=1
+  fi
+  if [ "$OUTPUT" = "minimal" ] && [ "$DETAIL_MODE" -eq 1 ]; then
+    die "--detail is not supported with --output minimal"
   fi
   if [ "$OUTPUT" = "json" ] && [ "$THEME" != "default" ]; then
     die "--theme is only supported for human-readable output"
@@ -2074,6 +2240,9 @@ main() {
   if [ "$OUTPUT" = "json" ]; then
     ENABLE_COLOR=0
     print_json_view
+  elif [ "$OUTPUT" = "minimal" ]; then
+    print_minimal_view
+    print_summary
   elif [ "$DETAIL_MODE" -eq 1 ]; then
     print_detail_view
     print_summary

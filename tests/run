@@ -232,6 +232,45 @@ assert_theme_rejected_for_json() {
   [ ! -s "$stdout_file" ] || fail "expected json theme failure to avoid stdout output"
 }
 
+assert_minimal_rejects_detail() {
+  local workspace="$1"
+  local stdout_file="$TMP_ROOT/minimal-detail.stdout"
+  local stderr_file="$TMP_ROOT/minimal-detail.stderr"
+  local status_file="$TMP_ROOT/minimal-detail.status"
+  local status=0
+
+  set +e
+  env LC_ALL=C TZ=UTC COLUMNS=80 NO_COLOR=1 "$CLI" --output minimal --detail "$workspace" >"$stdout_file" 2>"$stderr_file"
+  status=$?
+  set -e
+  printf '%s\n' "$status" >"$status_file"
+
+  [ "$status" -ne 0 ] || fail "expected --output minimal --detail to fail"
+  grep -F -- '--detail is not supported with --output minimal' "$stderr_file" >/dev/null ||
+    fail "expected minimal detail error message"
+  [ ! -s "$stdout_file" ] || fail "expected minimal detail failure to avoid stdout output"
+}
+
+assert_minimal_uses_repo_basename() {
+  local workspace="$TMP_ROOT/minimal-name-workspace"
+  local nested_repo="$workspace/parent/child/nested-repo"
+  local stdout_file="$TMP_ROOT/minimal-name.stdout"
+  local stderr_file="$TMP_ROOT/minimal-name.stderr"
+  local status_file="$TMP_ROOT/minimal-name.status"
+
+  init_git_repo "$nested_repo"
+  write_file "$nested_repo/file.txt" $'hello\n'
+  commit_all "$nested_repo" "Initial commit" "2024-01-06T00:00:00 +0000"
+
+  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --output minimal "$workspace"
+
+  [ ! -s "$stderr_file" ] || fail "expected minimal basename run to avoid stderr"
+  grep -E '^nested-repo  g ' "$stdout_file" >/dev/null || fail "expected minimal output to show repo basename"
+  if grep -F 'parent/child/nested-repo' "$stdout_file" >/dev/null 2>&1; then
+    fail "expected minimal output to avoid relative path names"
+  fi
+}
+
 assert_theme_and_no_color_aliases() {
   local workspace="$1"
   local long_stdout="$TMP_ROOT/theme-long.stdout"
@@ -345,6 +384,9 @@ assert_jj_push_state_defers_draft_count() {
   local stdout_file="$TMP_ROOT/jj-push.stdout"
   local stderr_file="$TMP_ROOT/jj-push.stderr"
   local status_file="$TMP_ROOT/jj-push.status"
+  local minimal_stdout_file="$TMP_ROOT/jj-push-minimal.stdout"
+  local minimal_stderr_file="$TMP_ROOT/jj-push-minimal.stderr"
+  local minimal_status_file="$TMP_ROOT/jj-push-minimal.status"
   local calls_file="$TMP_ROOT/jj-push.calls"
 
   mkdir -p "$workspace" "$fakebin"
@@ -389,6 +431,26 @@ assert_jj_push_state_defers_draft_count() {
   if grep -F 'no-remote git push --dry-run' "$calls_file" >/dev/null 2>&1; then
     fail "expected no-remote jj repo to skip dry-run push"
   fi
+
+  set +e
+  env \
+    LC_ALL=C \
+    TZ=UTC \
+    COLUMNS=80 \
+    NO_COLOR=1 \
+    PATH="$fakebin:$PATH" \
+    REPOHEALTH_TEST_JJ_CALLS_FILE="$calls_file" \
+    "$CLI" --jobs 1 --output minimal "$workspace" >"$minimal_stdout_file" 2>"$minimal_stderr_file"
+  status=$?
+  set -e
+  printf '%s\n' "$status" >"$minimal_status_file"
+
+  [ "$status" -eq 0 ] || fail "minimal jj push-state run failed with status $status"
+  [ ! -s "$minimal_stderr_file" ] || fail "expected minimal jj push-state run to avoid stderr"
+  grep -E '^clean-remote +j +\- +\- *$' "$minimal_stdout_file" >/dev/null || fail "expected clean JJ repo to remain clean in minimal output"
+  grep -E '^draft-only +j +~2 D +\- *$' "$minimal_stdout_file" >/dev/null || fail "expected draft-only JJ repo to show draft count in minimal output"
+  grep -E '^outgoing +j +↑1 O \+2 D +\- *$' "$minimal_stdout_file" >/dev/null || fail "expected outgoing JJ repo to include draft suffix in minimal output"
+  grep -E '^no-remote +j +\? +\- *$' "$minimal_stdout_file" >/dev/null || fail "expected no-remote JJ repo to remain a question state in minimal output"
 }
 
 assert_jj_push_detail_preserves_draft_detail() {
@@ -442,7 +504,9 @@ main() {
 
   assert_snapshot "empty" "$TMP_ROOT/empty" --jobs 1
   assert_snapshot "default" "$workspace" --jobs 1
+  assert_snapshot "minimal" "$workspace" --jobs 1 --output minimal
   assert_snapshot "dirty" "$workspace" --jobs 1 --dirty
+  assert_snapshot "minimal-dirty" "$workspace" --jobs 1 --output minimal --dirty
   assert_snapshot "exclude-single" "$workspace" --jobs 1 --exclude 'no-remote'
   assert_snapshot "exclude-multi" "$workspace" --jobs 1 --exclude 'no-remote' --exclude 'clean'
   assert_snapshot "detail" "$workspace/ahead-dirty" --jobs 1 --output detail
@@ -452,6 +516,8 @@ main() {
   assert_jobs_consistent "$workspace"
   assert_default_jobs_floor
   assert_theme_rejected_for_json "$workspace"
+  assert_minimal_rejects_detail "$workspace"
+  assert_minimal_uses_repo_basename
   assert_theme_and_no_color_aliases "$workspace"
   assert_jj_discovery_prefers_jj
   assert_jj_work_state_uses_diff_only

@@ -13,7 +13,7 @@ The script is designed for fast workspace sweeps where you want one aligned view
 - Reports Git outgoing, behind, diverged, and working-copy states.
 - Reports Jujutsu outgoing commit counts, draft commits, and working-copy changes.
 - Collects per-repo state in parallel by default for faster workspace sweeps.
-- Supports a compact table view, a per-repo detail view, and JSON output.
+- Supports a compact table view, a minimal view for narrow terminals, a per-repo detail view, and JSON output.
 - In detail output, Jujutsu outgoing sections show a per-commit stat breakdown for pushable commits.
 - Supports a check mode for scripting and automation.
 
@@ -45,7 +45,7 @@ If `directory` is omitted, the current directory is scanned.
 - `-e`, `--exclude PATTERN` skips repos whose path matches the ERE. May be repeated to exclude multiple patterns.
 - `-r`, `--remote NAME` overrides the remote used for Jujutsu push checks.
 - `-j`, `--jobs N` limits parallel repo-state workers. By default, repohealth auto-detects CPU count with a floor of 8 workers. Use `--jobs 1` for sequential collection.
-- `-o`, `--output FORMAT` sets the output format. Supported values: `table`, `detail`, `json`.
+- `-o`, `--output FORMAT` sets the output format. Supported values: `table`, `minimal`, `detail`, `json`.
 - `-t`, `--theme THEME` sets the human-output theme. Supported values: `default`, `fancy`.
 - `-N`, `--no-color` disables ANSI color output.
 - `-D`, `--detail` is a compatibility alias for `--output detail`; with `--output json`, it also includes detail fields.
@@ -69,6 +69,12 @@ Get detailed per-repo output:
 
 ```bash
 ./repohealth --output detail ~/src
+```
+
+Use the compact minimal view:
+
+```bash
+./repohealth --output minimal ~/src
 ```
 
 Use in a shell check or automation:
@@ -126,6 +132,16 @@ The default view prints one row per repo:
 ```text
 path/to/repo  [git]  ↑ 2 outgoing  |  * 3 modified, 1 untracked
 ```
+
+Minimal output uses the repo basename, a one-character VCS column (`g` for Git, `j`
+for JJ), and compact status cells:
+
+```text
+path/to/repo  g  ↑2 O  *3 M +1 U
+```
+
+Minimal mode is intentionally lossy for question and error reasons; use the default
+table or detail view when you need the explanatory text.
 
 The left status describes push state and the right status describes working-copy state.
 

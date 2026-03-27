@@ -1,0 +1,343 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="$(
+  cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd -P
+)"
+CLI_CURRENT="$ROOT_DIR/repohealth"
+BASELINE_REF="${BASELINE_REF:-4ebf75e}"
+RUNS="${RUNS:-5}"
+GIT_REPO_COUNT="${GIT_REPO_COUNT:-24}"
+JJ_REPO_BATCHES="${JJ_REPO_BATCHES:-3}"
+TMP_ROOT=""
+
+cleanup() {
+  if [ -n "${TMP_ROOT:-}" ] && [ -d "$TMP_ROOT" ]; then
+    rm -rf "$TMP_ROOT"
+  fi
+}
+
+fail() {
+  printf 'FAIL: %s\n' "$*" >&2
+  exit 1
+}
+
+make_temp_dir() {
+  local base="${TMPDIR:-/tmp}"
+  mktemp -d "$base/repohealth-bench.XXXXXX"
+}
+
+write_file() {
+  local path="$1"
+  local content="$2"
+  mkdir -p "$(dirname "$path")"
+  printf '%s' "$content" >"$path"
+}
+
+is_integer() {
+  case "$1" in
+    '' | *[!0-9]*)
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+init_git_repo() {
+  local path="$1"
+  mkdir -p "$path"
+  if ! git init --initial-branch=main "$path" >/dev/null 2>&1; then
+    git init "$path" >/dev/null 2>&1
+    git -C "$path" checkout -b main >/dev/null 2>&1 || git -C "$path" branch -M main >/dev/null 2>&1
+  fi
+  git -C "$path" config user.name "Repohealth Bench"
+  git -C "$path" config user.email "repohealth-bench@example.com"
+}
+
+init_bare_repo() {
+  local path="$1"
+  mkdir -p "$(dirname "$path")"
+  git init --bare "$path" >/dev/null 2>&1
+}
+
+commit_all() {
+  local repo="$1"
+  local message="$2"
+  local stamp="$3"
+  git -C "$repo" add -A
+  GIT_AUTHOR_NAME="Repohealth Bench" \
+    GIT_AUTHOR_EMAIL="repohealth-bench@example.com" \
+    GIT_AUTHOR_DATE="$stamp" \
+    GIT_COMMITTER_NAME="Repohealth Bench" \
+    GIT_COMMITTER_EMAIL="repohealth-bench@example.com" \
+    GIT_COMMITTER_DATE="$stamp" \
+    git -C "$repo" commit -m "$message" >/dev/null 2>&1
+}
+
+extract_cli() {
+  local ref="$1"
+  local destination="$2"
+  git -C "$ROOT_DIR" show "$ref:repohealth" >"$destination"
+  chmod +x "$destination"
+}
+
+jj_run() {
+  jj \
+    --config='user.name="Repohealth Bench"' \
+    --config='user.email="repohealth-bench@example.com"' \
+    "$@"
+}
+
+build_git_workspace() {
+  local workspace="$TMP_ROOT/workspaces/git-clean"
+  local remotes="$TMP_ROOT/remotes/git"
+  local i=1
+
+  mkdir -p "$workspace" "$remotes"
+  while [ "$i" -le "$GIT_REPO_COUNT" ]; do
+    local name="repo-$i"
+    init_bare_repo "$remotes/$name.git"
+    init_git_repo "$workspace/$name"
+    write_file "$workspace/$name/README.md" "repo $i"$'\n'
+    commit_all "$workspace/$name" "Initial commit" "2024-01-01T00:00:00 +0000"
+    git -C "$workspace/$name" remote add origin "$remotes/$name.git"
+    git -C "$workspace/$name" push -u origin main >/dev/null 2>&1
+    i=$((i + 1))
+  done
+
+  printf '%s' "$workspace"
+}
+
+seed_jj_remote_repo() {
+  local root="$1"
+  local remote="$2"
+  local mode="$3"
+
+  init_bare_repo "$remote"
+  jj_run git clone "$remote" "$root" >/dev/null 2>&1
+
+  write_file "$root/file.txt" "base"$'\n'
+  jj_run -R "$root" commit -m "init" >/dev/null 2>&1
+  jj_run -R "$root" bookmark create main -r @- >/dev/null 2>&1
+  jj_run -R "$root" git push --allow-new >/dev/null 2>&1
+
+  case "$mode" in
+    clean)
+      ;;
+    draft)
+      printf 'draft\n' >>"$root/file.txt"
+      jj_run -R "$root" commit -m "draft" >/dev/null 2>&1
+      ;;
+    outgoing)
+      printf 'outgoing\n' >>"$root/file.txt"
+      jj_run -R "$root" commit -m "outgoing" >/dev/null 2>&1
+      jj_run -R "$root" bookmark move main --to @- >/dev/null 2>&1
+      ;;
+    outgoing_draft)
+      printf 'outgoing\n' >>"$root/file.txt"
+      jj_run -R "$root" commit -m "outgoing" >/dev/null 2>&1
+      jj_run -R "$root" bookmark move main --to @- >/dev/null 2>&1
+      printf 'draft\n' >>"$root/file.txt"
+      jj_run -R "$root" commit -m "draft" >/dev/null 2>&1
+      ;;
+    *)
+      fail "unknown JJ seed mode: $mode"
+      ;;
+  esac
+}
+
+build_jj_workspace() {
+  local workspace="$TMP_ROOT/workspaces/jj-mixed"
+  local remotes="$TMP_ROOT/remotes/jj"
+  local i=1
+
+  mkdir -p "$workspace" "$remotes"
+  while [ "$i" -le "$JJ_REPO_BATCHES" ]; do
+    seed_jj_remote_repo "$workspace/clean-$i" "$remotes/clean-$i.git" clean
+    seed_jj_remote_repo "$workspace/draft-$i" "$remotes/draft-$i.git" draft
+    seed_jj_remote_repo "$workspace/outgoing-$i" "$remotes/outgoing-$i.git" outgoing
+    seed_jj_remote_repo "$workspace/outgoing-draft-$i" "$remotes/outgoing-draft-$i.git" outgoing_draft
+
+    jj_run git init "$workspace/no-remote-$i" >/dev/null 2>&1
+    write_file "$workspace/no-remote-$i/file.txt" "local only"$'\n'
+    jj_run -R "$workspace/no-remote-$i" commit -m "local" >/dev/null 2>&1
+
+    i=$((i + 1))
+  done
+
+  printf '%s' "$workspace"
+}
+
+median_of_lines() {
+  sort -n | awk '
+    { values[++count] = $1 }
+    END {
+      if (count == 0) {
+        exit 1
+      }
+      if (count % 2 == 1) {
+        printf "%.3f", values[(count + 1) / 2]
+      } else {
+        printf "%.3f", (values[count / 2] + values[(count / 2) + 1]) / 2
+      }
+    }
+  '
+}
+
+percent_delta() {
+  local baseline="$1"
+  local current="$2"
+  awk -v baseline="$baseline" -v current="$current" '
+    BEGIN {
+      if (baseline <= 0) {
+        printf "n/a"
+      } else {
+        printf "%+.1f%%", ((current - baseline) / baseline) * 100
+      }
+    }
+  '
+}
+
+benchmark_once() {
+  local cli="$1"
+  shift
+
+  local elapsed status
+  TIMEFORMAT=%R
+  set +e
+  elapsed="$({ time env LC_ALL=C TZ=UTC COLUMNS=80 NO_COLOR=1 "$cli" "$@" >/dev/null 2>/dev/null; } 2>&1)"
+  status=$?
+  set -e
+
+  [ "$status" -eq 0 ] || fail "benchmark run failed ($cli $*) with status $status"
+  elapsed="${elapsed//$'\n'/}"
+  printf '%s' "$elapsed"
+}
+
+benchmark_case() {
+  local cli="$1"
+  local workspace="$2"
+  shift 2
+
+  local run_file="$TMP_ROOT/bench-times.$$.$RANDOM"
+  local i=1
+
+  benchmark_once "$cli" "$@" "$workspace" >/dev/null
+  : >"$run_file"
+  while [ "$i" -le "$RUNS" ]; do
+    benchmark_once "$cli" "$@" "$workspace" >>"$run_file"
+    printf '\n' >>"$run_file"
+    i=$((i + 1))
+  done
+
+  median_of_lines <"$run_file"
+  rm -f "$run_file"
+}
+
+print_environment() {
+  local current_ref git_version jj_version
+  current_ref="$(git -C "$ROOT_DIR" rev-parse --short HEAD)"
+  git_version="$(git --version)"
+  jj_version="not installed"
+  if command -v jj >/dev/null 2>&1; then
+    jj_version="$(jj --version)"
+  fi
+
+  printf 'Environment:\n'
+  printf -- '- host: %s\n' "$(uname -srm)"
+  printf -- '- git: %s\n' "$git_version"
+  printf -- '- jj: %s\n' "$jj_version"
+  printf -- '- baseline ref: %s\n' "$BASELINE_REF"
+  printf -- '- current ref: %s\n' "$current_ref"
+  printf -- '- runs per case: %s\n' "$RUNS"
+  printf -- '- git repos per benchmark: %s\n' "$GIT_REPO_COUNT"
+  printf -- '- jj repo batches: %s (5 repos per batch)\n' "$JJ_REPO_BATCHES"
+}
+
+run_comparison_table() {
+  local baseline_cli="$1"
+  local current_cli="$2"
+  local git_workspace="$3"
+  local jj_workspace="$4"
+  local baseline_time current_time
+
+  printf '\nComparison (median seconds):\n'
+  printf '| workspace | args | baseline | current | delta |\n'
+  printf '| --- | --- | ---: | ---: | ---: |\n'
+
+  baseline_time="$(benchmark_case "$baseline_cli" "$git_workspace")"
+  current_time="$(benchmark_case "$current_cli" "$git_workspace")"
+  printf '| git-clean | `%s` | %s | %s | %s |\n' "./repohealth" "$baseline_time" "$current_time" "$(percent_delta "$baseline_time" "$current_time")"
+
+  baseline_time="$(benchmark_case "$baseline_cli" "$git_workspace" --detail)"
+  current_time="$(benchmark_case "$current_cli" "$git_workspace" --detail)"
+  printf '| git-clean | `%s` | %s | %s | %s |\n' "./repohealth --detail" "$baseline_time" "$current_time" "$(percent_delta "$baseline_time" "$current_time")"
+
+  baseline_time="$(benchmark_case "$baseline_cli" "$jj_workspace")"
+  current_time="$(benchmark_case "$current_cli" "$jj_workspace")"
+  printf '| jj-mixed | `%s` | %s | %s | %s |\n' "./repohealth" "$baseline_time" "$current_time" "$(percent_delta "$baseline_time" "$current_time")"
+
+  baseline_time="$(benchmark_case "$baseline_cli" "$jj_workspace" --detail)"
+  current_time="$(benchmark_case "$current_cli" "$jj_workspace" --detail)"
+  printf '| jj-mixed | `%s` | %s | %s | %s |\n' "./repohealth --detail" "$baseline_time" "$current_time" "$(percent_delta "$baseline_time" "$current_time")"
+}
+
+run_jobs_table() {
+  local current_cli="$1"
+  local git_workspace="$2"
+  local jj_workspace="$3"
+  local auto_time jobs1_time jobs8_time
+
+  printf '\nCurrent concurrency check (median seconds):\n'
+  printf '| workspace | args | auto | --jobs 1 | --jobs 8 |\n'
+  printf '| --- | --- | ---: | ---: | ---: |\n'
+
+  auto_time="$(benchmark_case "$current_cli" "$git_workspace")"
+  jobs1_time="$(benchmark_case "$current_cli" "$git_workspace" --jobs 1)"
+  jobs8_time="$(benchmark_case "$current_cli" "$git_workspace" --jobs 8)"
+  printf '| git-clean | `%s` | %s | %s | %s |\n' "./repohealth" "$auto_time" "$jobs1_time" "$jobs8_time"
+
+  auto_time="$(benchmark_case "$current_cli" "$jj_workspace")"
+  jobs1_time="$(benchmark_case "$current_cli" "$jj_workspace" --jobs 1)"
+  jobs8_time="$(benchmark_case "$current_cli" "$jj_workspace" --jobs 8)"
+  printf '| jj-mixed | `%s` | %s | %s | %s |\n' "./repohealth" "$auto_time" "$jobs1_time" "$jobs8_time"
+
+  auto_time="$(benchmark_case "$current_cli" "$jj_workspace" --detail)"
+  jobs1_time="$(benchmark_case "$current_cli" "$jj_workspace" --detail --jobs 1)"
+  jobs8_time="$(benchmark_case "$current_cli" "$jj_workspace" --detail --jobs 8)"
+  printf '| jj-mixed | `%s` | %s | %s | %s |\n' "./repohealth --detail" "$auto_time" "$jobs1_time" "$jobs8_time"
+}
+
+main() {
+  trap cleanup EXIT
+
+  [ -x "$CLI_CURRENT" ] || fail "repohealth is not executable: $CLI_CURRENT"
+  command -v git >/dev/null 2>&1 || fail "git is required"
+  command -v awk >/dev/null 2>&1 || fail "awk is required"
+  command -v jj >/dev/null 2>&1 || fail "jj is required for tests/benchmark"
+  is_integer "$RUNS" || fail "RUNS must be an integer"
+  is_integer "$GIT_REPO_COUNT" || fail "GIT_REPO_COUNT must be an integer"
+  is_integer "$JJ_REPO_BATCHES" || fail "JJ_REPO_BATCHES must be an integer"
+  git -C "$ROOT_DIR" rev-parse --verify "$BASELINE_REF^{commit}" >/dev/null 2>&1 || fail "baseline ref not found: $BASELINE_REF"
+
+  TMP_ROOT="$(make_temp_dir)"
+  local baseline_cli="$TMP_ROOT/repohealth-baseline"
+  local current_cli="$TMP_ROOT/repohealth-current"
+  local git_workspace jj_workspace
+
+  extract_cli "$BASELINE_REF" "$baseline_cli"
+  cp "$CLI_CURRENT" "$current_cli"
+  chmod +x "$current_cli"
+
+  git_workspace="$(build_git_workspace)"
+  jj_workspace="$(build_jj_workspace)"
+
+  print_environment
+  run_comparison_table "$baseline_cli" "$current_cli" "$git_workspace" "$jj_workspace"
+  run_jobs_table "$current_cli" "$git_workspace" "$jj_workspace"
+}
+
+main "$@"

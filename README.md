@@ -185,6 +185,14 @@ There is still no formal build or test pipeline, but the repo now includes a lig
 
 The harness creates temporary Git repos, runs `repohealth` with fixed terminal settings, and compares stdout, stderr, and exit codes against checked-in fixtures under `tests/fixtures/`.
 
+For performance work, there is also a repeatable benchmark harness:
+
+```bash
+./tests/benchmark
+```
+
+It compares the current script against baseline ref `4ebf75e` on synthetic Git and JJ workspaces and reports median timings for default, `--detail`, and job-count runs.
+
 ## Limitations
 
 - Git status is compared against the configured upstream branch, not every remote branch.

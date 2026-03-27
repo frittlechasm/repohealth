@@ -458,7 +458,7 @@ discover_repos() {
   while IFS= read -r -d '' marker; do
     # fd appends a trailing slash to directory results; strip it for consistent handling.
     marker="${marker%/}"
-    candidate="$(dirname "$marker")"
+    candidate="${marker%/*}"
     # fd traverses into .git dirs; skip markers nested inside them.
     if [ -n "$FD_CMD" ]; then
       case "$candidate" in
@@ -466,7 +466,7 @@ discover_repos() {
       esac
     fi
     type="git"
-    if [ "$(basename "$marker")" = ".jj" ]; then
+    if [ "${marker##*/}" = ".jj" ]; then
       type="jj"
     elif [ -f "$marker" ] && is_linked_worktree_gitfile "$marker"; then
       warn "Skipping linked worktree at $candidate"

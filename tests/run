@@ -213,6 +213,46 @@ assert_default_jobs_floor() {
   [ "$max_active" -ge 8 ] || fail "expected auto-detected default jobs floor to reach at least 8 workers, saw $max_active"
 }
 
+assert_jj_discovery_prefers_jj() {
+  local workspace="$TMP_ROOT/jj-discovery-workspace"
+  local fakebin="$TMP_ROOT/jj-discovery-bin"
+  local stdout_file="$TMP_ROOT/jj-discovery.stdout"
+  local stderr_file="$TMP_ROOT/jj-discovery.stderr"
+  local status_file="$TMP_ROOT/jj-discovery.status"
+  local calls_file="$TMP_ROOT/jj-discovery.calls"
+
+  mkdir -p "$workspace" "$fakebin"
+
+  init_git_repo "$workspace/mixed"
+  write_file "$workspace/mixed/file.txt" $'hello\n'
+  commit_all "$workspace/mixed" "Initial commit" "2024-01-05T00:00:00 +0000"
+  mkdir -p "$workspace/mixed/.jj"
+
+  write_file "$calls_file" ''
+  write_executable "$fakebin/jj" $'#!/usr/bin/env bash\nset -euo pipefail\ncalls_file="${REPOHEALTH_TEST_JJ_CALLS_FILE:?}"\nprintf \'%s\\n\' "$*" >>"$calls_file"\n\nif [ "${1:-}" != "-R" ]; then\n  printf \'unexpected jj invocation: %s\\n\' "$*" >&2\n  exit 1\nfi\nshift 2\n\ncase "${1:-}" in\n  root)\n    printf \'jj root should not be called during discovery\\n\' >&2\n    exit 99\n    ;;\n  log)\n    if [ "${3:-}" = "--count" ] || [ "${4:-}" = "--count" ]; then\n      printf \'0\\n\'\n      exit 0\n    fi\n    ;;\n  git)\n    case "${2:-}" in\n      remote)\n        exit 0\n        ;;\n      push)\n        printf \'Nothing changed.\\nDry-run requested, not pushing.\\n\'\n        exit 0\n        ;;\n    esac\n    ;;\n  status)\n    exit 0\n    ;;\n  diff)\n    exit 0\n    ;;\n esac\n\nprintf \'unexpected jj invocation: %s\\n\' "$*" >&2\nexit 1\n'
+
+  local status=0
+  set +e
+  env \
+    LC_ALL=C \
+    TZ=UTC \
+    COLUMNS=80 \
+    NO_COLOR=1 \
+    PATH="$fakebin:$PATH" \
+    REPOHEALTH_TEST_JJ_CALLS_FILE="$calls_file" \
+    "$CLI" --jobs 1 "$workspace" >"$stdout_file" 2>"$stderr_file"
+  status=$?
+  set -e
+  printf '%s\n' "$status" >"$status_file"
+
+  [ "$status" -eq 0 ] || fail "jj discovery preference run failed with status $status"
+  [ ! -s "$stderr_file" ] || fail "jj discovery preference run wrote unexpected stderr"
+  grep -F 'mixed  [jj]' "$stdout_file" >/dev/null || fail "expected colocated .git/.jj repo to be reported as [jj]"
+  if grep -F ' root' "$calls_file" >/dev/null 2>&1; then
+    fail "expected jj discovery to avoid jj root probe"
+  fi
+}
+
 main() {
   trap cleanup EXIT
 
@@ -237,6 +277,7 @@ main() {
   assert_snapshot "format-json-detail" "$workspace/ahead-dirty" --jobs 1 --output json --detail
   assert_jobs_consistent "$workspace"
   assert_default_jobs_floor
+  assert_jj_discovery_prefers_jj
 
   # multi-directory: scan two separate roots
   local dir_a="$TMP_ROOT/multi-a"

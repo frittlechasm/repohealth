@@ -476,14 +476,7 @@ discover_repos() {
       continue
     fi
 
-    if [ "$type" = "jj" ] && [ "$HAVE_JJ" -eq 1 ]; then
-      normalized_root="$(jj -R "$candidate" root 2>/dev/null || true)"
-      if [ -z "$normalized_root" ]; then
-        normalized_root="$candidate"
-      fi
-    else
-      normalized_root="$candidate"
-    fi
+    normalized_root="$candidate"
 
     normalized_root="$(canonicalize_dir "$normalized_root" 2>/dev/null || true)"
     if [ -z "$normalized_root" ]; then

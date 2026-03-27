@@ -185,6 +185,23 @@ main() {
   assert_snapshot "format-json-detail" "$workspace/ahead-dirty" --jobs 1 --output json --detail
   assert_jobs_consistent "$workspace"
 
+  # multi-directory: scan two separate roots
+  local dir_a="$TMP_ROOT/multi-a"
+  local dir_b="$TMP_ROOT/multi-b"
+  init_git_repo "$dir_a/alpha"
+  write_file "$dir_a/alpha/file.txt" $'hello\n'
+  commit_all "$dir_a/alpha" "Initial commit" "2024-01-01T00:00:00 +0000"
+  init_git_repo "$dir_b/beta"
+  write_file "$dir_b/beta/file.txt" $'world\n'
+  commit_all "$dir_b/beta" "Initial commit" "2024-01-01T00:00:00 +0000"
+  local multi_stdout="$TMP_ROOT/multi-dir.stdout"
+  local multi_stderr="$TMP_ROOT/multi-dir.stderr"
+  local multi_status="$TMP_ROOT/multi-dir.status"
+  run_cli "$multi_stdout" "$multi_stderr" "$multi_status" --jobs 1 "$dir_a" "$dir_b"
+  compare_file "multi-dir stdout" "$FIXTURES_DIR/multi-dir.stdout" "$multi_stdout"
+  compare_file "multi-dir stderr" "$FIXTURES_DIR/multi-dir.stderr" "$multi_stderr"
+  compare_file "multi-dir status" "$FIXTURES_DIR/multi-dir.status" "$multi_status"
+
   printf 'All snapshot tests passed.\n'
 }
 

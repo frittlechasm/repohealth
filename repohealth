@@ -12,8 +12,8 @@ OUTPUT=""
 REMOTE_OVERRIDE=""
 PARALLEL_JOBS=""
 EXCLUDE_PATTERNS=()
-SCAN_ROOT="."
-SCAN_ROOT_CANON=""
+SCAN_ROOTS=()
+SCAN_ROOT_CANONS=()
 STATE_TMP_DIR=""
 
 HAVE_GIT=0
@@ -40,7 +40,7 @@ REPO_DRAFT_DETAIL=()
 
 usage() {
   cat <<EOF
-Usage: $PROGRAM_NAME [options] [directory]
+Usage: $PROGRAM_NAME [options] [directory ...]
 
 Scan nested Git and Jujutsu repos and report outgoing commits plus working-copy changes.
 
@@ -201,18 +201,22 @@ canonicalize_dir() {
 
 display_path() {
   local path="$1"
-  if [ -n "$SCAN_ROOT_CANON" ]; then
+  local i root
+  for ((i = 0; i < ${#SCAN_ROOT_CANONS[@]}; i++)); do
+    root="${SCAN_ROOT_CANONS[$i]}"
     case "$path" in
-    "$SCAN_ROOT_CANON")
-      printf '.'
-      return
+    "$root")
+      if [ "${#SCAN_ROOT_CANONS[@]}" -eq 1 ]; then
+        printf '.'
+        return
+      fi
       ;;
-    "$SCAN_ROOT_CANON"/*)
-      printf '%s' "${path#"$SCAN_ROOT_CANON"/}"
+    "$root"/*)
+      printf '%s' "${path#"$root"/}"
       return
       ;;
     esac
-  fi
+  done
   if [ -n "${HOME:-}" ]; then
     case "$path" in
     "$HOME")
@@ -400,6 +404,7 @@ is_linked_worktree_gitfile() {
 }
 
 discover_repos() {
+  local scan_root="$1"
   local scan_cmd
   if [ -n "$FD_CMD" ]; then
     scan_cmd=("$FD_CMD" --hidden --no-ignore --print0)
@@ -410,9 +415,9 @@ discover_repos() {
     if [ -n "$MAX_DEPTH" ]; then
       scan_cmd+=(--max-depth "$MAX_DEPTH")
     fi
-    scan_cmd+=(-t d -t f '^\.(git|jj)$' "$SCAN_ROOT")
+    scan_cmd+=(-t d -t f '^\.(git|jj)$' "$scan_root")
   else
-    scan_cmd=(find "$SCAN_ROOT")
+    scan_cmd=(find "$scan_root")
     if [ -n "$MAX_DEPTH" ]; then
       scan_cmd+=(-maxdepth "$MAX_DEPTH")
     fi
@@ -1959,35 +1964,27 @@ parse_args() {
       die "unknown option: $1"
       ;;
     *)
-      if [ "$SCAN_ROOT" != "." ]; then
-        die "only one directory argument is supported"
-      fi
-      SCAN_ROOT="$1"
+      SCAN_ROOTS+=("$1")
       ;;
     esac
     shift
   done
-
-  if [ "$#" -gt 0 ]; then
-    if [ "$SCAN_ROOT" != "." ]; then
-      die "only one directory argument is supported"
-    fi
-    SCAN_ROOT="$1"
-    shift
-  fi
-  [ "$#" -eq 0 ] || die "unexpected extra arguments"
 }
 
 main() {
   parse_args "$@"
   trap cleanup_temp_state EXIT
 
-  [ -d "$SCAN_ROOT" ] || die "directory does not exist: $SCAN_ROOT"
-  SCAN_ROOT_CANON="$(canonicalize_dir "$SCAN_ROOT" 2>/dev/null || true)"
-  if [ -z "$SCAN_ROOT_CANON" ]; then
-    die "failed to resolve scan root: $SCAN_ROOT"
+  if [ "${#SCAN_ROOTS[@]}" -eq 0 ]; then
+    SCAN_ROOTS=(".")
   fi
-  SCAN_ROOT="$SCAN_ROOT_CANON"
+  local _root _canon
+  for _root in "${SCAN_ROOTS[@]}"; do
+    [ -d "$_root" ] || die "directory does not exist: $_root"
+    _canon="$(canonicalize_dir "$_root" 2>/dev/null || true)"
+    [ -n "$_canon" ] || die "failed to resolve scan root: $_root"
+    SCAN_ROOT_CANONS+=("$_canon")
+  done
 
   if command_exists git; then
     HAVE_GIT=1
@@ -2019,7 +2016,9 @@ main() {
     PARALLEL_JOBS="$(default_parallel_jobs)"
   fi
 
-  discover_repos
+  for _canon in "${SCAN_ROOT_CANONS[@]}"; do
+    discover_repos "$_canon"
+  done
   sort_repos
 
   collect_all_repo_states

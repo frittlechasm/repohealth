@@ -273,24 +273,107 @@ assert_detail_alias_matches_output_precedence() {
     fail "expected json detail fields to include untracked entries"
 }
 
-assert_minimal_uses_repo_basename() {
-  local workspace="$TMP_ROOT/minimal-name-workspace"
+assert_path_display() {
+  local workspace="$TMP_ROOT/path-display-workspace"
   local nested_repo="$workspace/parent/child/nested-repo"
-  local stdout_file="$TMP_ROOT/minimal-name.stdout"
-  local stderr_file="$TMP_ROOT/minimal-name.stderr"
-  local status_file="$TMP_ROOT/minimal-name.status"
 
   init_git_repo "$nested_repo"
   write_file "$nested_repo/file.txt" $'hello\n'
   commit_all "$nested_repo" "Initial commit" "2024-01-06T00:00:00 +0000"
 
-  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --output minimal "$workspace"
-
-  [ ! -s "$stderr_file" ] || fail "expected minimal basename run to avoid stderr"
-  grep -E '^nested-repo  g ' "$stdout_file" >/dev/null || fail "expected minimal output to show repo basename"
-  if grep -F 'parent/child/nested-repo' "$stdout_file" >/dev/null 2>&1; then
-    fail "expected minimal output to avoid relative path names"
+  # Default table view shows basename
+  local table_stdout="$TMP_ROOT/path-table.stdout"
+  local table_stderr="$TMP_ROOT/path-table.stderr"
+  local table_status="$TMP_ROOT/path-table.status"
+  run_cli "$table_stdout" "$table_stderr" "$table_status" --jobs 1 "$workspace"
+  [ ! -s "$table_stderr" ] || fail "expected table path-display to avoid stderr"
+  grep -E '^nested-repo  \[git\]' "$table_stdout" >/dev/null || fail "expected table output to show repo basename by default"
+  if grep -F 'parent/child/nested-repo' "$table_stdout" >/dev/null 2>&1; then
+    fail "expected table output to avoid relative paths by default"
   fi
+
+  # Default minimal view shows basename
+  local minimal_stdout="$TMP_ROOT/path-minimal.stdout"
+  local minimal_stderr="$TMP_ROOT/path-minimal.stderr"
+  local minimal_status="$TMP_ROOT/path-minimal.status"
+  run_cli "$minimal_stdout" "$minimal_stderr" "$minimal_status" --jobs 1 --output minimal "$workspace"
+  [ ! -s "$minimal_stderr" ] || fail "expected minimal path-display to avoid stderr"
+  grep -E '^nested-repo  g ' "$minimal_stdout" >/dev/null || fail "expected minimal output to show repo basename by default"
+  if grep -F 'parent/child/nested-repo' "$minimal_stdout" >/dev/null 2>&1; then
+    fail "expected minimal output to avoid relative paths by default"
+  fi
+
+  # --paths relative shows relative path
+  local rel_stdout="$TMP_ROOT/path-relative.stdout"
+  local rel_stderr="$TMP_ROOT/path-relative.stderr"
+  local rel_status="$TMP_ROOT/path-relative.status"
+  run_cli "$rel_stdout" "$rel_stderr" "$rel_status" --jobs 1 --paths relative "$workspace"
+  [ ! -s "$rel_stderr" ] || fail "expected --paths relative to avoid stderr"
+  grep -F 'parent/child/nested-repo' "$rel_stdout" >/dev/null || fail "expected --paths relative to show relative path"
+
+  # --paths full shows absolute path
+  local full_stdout="$TMP_ROOT/path-full.stdout"
+  local full_stderr="$TMP_ROOT/path-full.stderr"
+  local full_status="$TMP_ROOT/path-full.status"
+  local nested_canon
+  nested_canon="$(cd "$nested_repo" && pwd -P)"
+  run_cli "$full_stdout" "$full_stderr" "$full_status" --jobs 1 --paths full "$workspace"
+  [ ! -s "$full_stderr" ] || fail "expected --paths full to avoid stderr"
+  grep -F "$nested_canon" "$full_stdout" >/dev/null || fail "expected --paths full to show absolute path"
+
+  # --exclude matches against relative path regardless of --paths style
+  local excl_stdout="$TMP_ROOT/path-exclude.stdout"
+  local excl_stderr="$TMP_ROOT/path-exclude.stderr"
+  local excl_status="$TMP_ROOT/path-exclude.status"
+  run_cli "$excl_stdout" "$excl_stderr" "$excl_status" --jobs 1 --exclude 'parent/child' "$workspace"
+  [ ! -s "$excl_stderr" ] || fail "expected --exclude relative-path run to avoid stderr"
+  if grep -F 'nested-repo' "$excl_stdout" >/dev/null 2>&1; then
+    fail "expected --exclude to match against relative path and exclude nested-repo"
+  fi
+}
+
+assert_json_paths_stable() {
+  local workspace="$TMP_ROOT/json-paths-workspace"
+  local nested_repo="$workspace/apps/service"
+  local json_stdout="$TMP_ROOT/json-paths.stdout"
+  local json_stderr="$TMP_ROOT/json-paths.stderr"
+  local json_status="$TMP_ROOT/json-paths.status"
+  local dir_a="$TMP_ROOT/json-multi-a"
+  local dir_b="$TMP_ROOT/json-multi-b"
+  local multi_stdout="$TMP_ROOT/json-multi.stdout"
+  local multi_stderr="$TMP_ROOT/json-multi.stderr"
+  local multi_status="$TMP_ROOT/json-multi.status"
+  local repo_a="$dir_a/service"
+  local repo_b="$dir_b/service"
+  local repo_a_canon repo_b_canon
+
+  init_git_repo "$nested_repo"
+  write_file "$nested_repo/file.txt" $'hello\n'
+  commit_all "$nested_repo" "Initial commit" "2024-01-06T00:00:00 +0000"
+
+  run_cli "$json_stdout" "$json_stderr" "$json_status" --jobs 1 --output json "$workspace"
+  [ ! -s "$json_stderr" ] || fail "expected default json path run to avoid stderr"
+  grep -F '"path": "apps/service"' "$json_stdout" >/dev/null ||
+    fail "expected default json output to use relative paths under a single scan root"
+  if grep -F '"path": "service"' "$json_stdout" >/dev/null 2>&1; then
+    fail "expected default json output to avoid basename-only paths"
+  fi
+
+  init_git_repo "$repo_a"
+  write_file "$repo_a/file.txt" $'alpha\n'
+  commit_all "$repo_a" "Initial commit" "2024-01-06T00:00:00 +0000"
+  init_git_repo "$repo_b"
+  write_file "$repo_b/file.txt" $'beta\n'
+  commit_all "$repo_b" "Initial commit" "2024-01-06T00:00:00 +0000"
+
+  repo_a_canon="$(cd "$repo_a" && pwd -P)"
+  repo_b_canon="$(cd "$repo_b" && pwd -P)"
+  run_cli "$multi_stdout" "$multi_stderr" "$multi_status" --jobs 1 --output json "$dir_a" "$dir_b"
+  [ ! -s "$multi_stderr" ] || fail "expected multi-root json path run to avoid stderr"
+  grep -F "\"path\": \"$repo_a_canon\"" "$multi_stdout" >/dev/null ||
+    fail "expected multi-root json output to use full paths for uniqueness"
+  grep -F "\"path\": \"$repo_b_canon\"" "$multi_stdout" >/dev/null ||
+    fail "expected multi-root json output to use full paths for uniqueness"
 }
 
 assert_jj_discovery_prefers_jj() {
@@ -521,7 +604,8 @@ main() {
   assert_jobs_consistent "$workspace"
   assert_default_jobs_floor
   assert_detail_alias_matches_output_precedence "$workspace"
-  assert_minimal_uses_repo_basename
+  assert_path_display
+  assert_json_paths_stable
   assert_jj_discovery_prefers_jj
   assert_jj_work_state_uses_diff_only
   assert_jj_push_state_defers_draft_count

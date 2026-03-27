@@ -46,6 +46,7 @@ If `directory` is omitted, the current directory is scanned.
 - `-r`, `--remote NAME` overrides the remote used for Jujutsu push checks.
 - `-j`, `--jobs N` limits parallel repo-state workers. By default, repohealth auto-detects CPU count with a floor of 8 workers. Use `--jobs 1` for sequential collection.
 - `-o`, `--output FORMAT` sets the output format. Supported values: `table`, `minimal`, `detail`, `fancy-detail`, `json`.
+- `-p`, `--paths STYLE` controls how repo paths are displayed. Supported values: `name` (repo basename, default), `relative` (path relative to the scan root), `full` (absolute path). JSON output defaults to stable unique paths unless `--paths` is set explicitly.
 - `-N`, `--no-color` disables ANSI color output.
 - `-D`, `--detail` is a compatibility alias for `--output detail`; with `--output json`, it also includes detail fields.
 - `-h`, `--help` shows the help text.
@@ -129,16 +130,18 @@ Force sequential collection for debugging:
 The default view prints one row per repo:
 
 ```text
-path/to/repo  [git]  ↑ 2 outgoing  |  * 3 modified, 1 untracked
+myrepo  [git]  ↑ 2 outgoing  |  * 3 modified, 1 untracked
 ```
 
-Minimal output uses the repo basename, a one-character VCS column (`g` for Git, `j` for JJ), and compact status cells:
+Minimal output uses a one-character VCS column (`g` for Git, `j` for JJ) and compact status cells:
 
 ```text
-path/to/repo  g  ↑2 O  *3 M +1 U
+myrepo  g  ↑2 O  *3 M +1 U
 ```
 
 Minimal mode is intentionally lossy for question and error reasons; use the default table or detail view when you need the explanatory text.
+
+By default the human-readable views show only the repo basename. Use `--paths relative` to show paths relative to the scan root, or `--paths full` to show absolute paths.
 
 The left status describes push state and the right status describes working-copy state.
 
@@ -178,6 +181,7 @@ At the end of every run, the script prints a summary line with scanned repo coun
 - Discovery skips common heavy directories such as `node_modules`, `vendor`, `target`, `__pycache__`, `.svn`, and `.hg`.
 - Linked Git worktrees referenced through `.git` files under `/worktrees/` are skipped intentionally.
 - When both `.git` and `.jj` are present at the same root, the repo is treated as `jj`.
+- In JSON output, the `path` field defaults to stable unique paths: relative to the scan root for single-root scans, and absolute for multi-root scans. Pass `--paths` explicitly to override that behavior.
 - In JSON output, detail fields (outgoing commits, draft commits, working-copy changes) are structured arrays, not raw strings. Detail fields are only populated when `--detail` is requested alongside `--output json`.
 
 ## Validation Checklist

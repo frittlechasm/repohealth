@@ -9,6 +9,8 @@ MAX_DEPTH=""
 CHECK_MODE=0
 DETAIL_MODE=0
 OUTPUT="table"
+PATH_STYLE="name"
+PATH_STYLE_EXPLICIT=0
 NO_COLOR_FLAG=0
 REMOTE_OVERRIDE=""
 PARALLEL_JOBS=""
@@ -57,6 +59,7 @@ Options:
   -j, --jobs N          Collect repo state in parallel with up to N workers
   -e, --exclude PATTERN Exclude repos whose path matches the ERE (may be repeated)
   -o, --output FORMAT   Output format: table, minimal, detail, fancy-detail, json (default: table)
+  -p, --paths STYLE     Path display style: name, relative, full (default: name; json uses stable unique paths unless set)
   -N, --no-color        Disable ANSI color output
   -D, --detail          Alias for --output detail; with --output json, include detail fields
   -h, --help            Show this help text
@@ -92,6 +95,19 @@ request_detail_output() {
   if [ "$OUTPUT" != "json" ]; then
     OUTPUT="detail"
   fi
+}
+
+set_path_style() {
+  local style="$1"
+  case "$style" in
+  name | relative | full)
+    PATH_STYLE="$style"
+    PATH_STYLE_EXPLICIT=1
+    ;;
+  *)
+    die "--paths must be one of: name, relative, full"
+    ;;
+  esac
 }
 
 json_escape() {
@@ -223,7 +239,7 @@ canonicalize_dir() {
   fi
 }
 
-display_path() {
+relative_path() {
   local path="$1"
   local i root
   for ((i = 0; i < ${#SCAN_ROOT_CANONS[@]}; i++)); do
@@ -252,6 +268,39 @@ display_path() {
       return
       ;;
     esac
+  fi
+  printf '%s' "$path"
+}
+
+display_path() {
+  local path="$1"
+  case "$PATH_STYLE" in
+  name)
+    local base="${path%/}"
+    if [ -z "$base" ]; then
+      printf '/'
+    else
+      printf '%s' "${base##*/}"
+    fi
+    return
+    ;;
+  full)
+    printf '%s' "$path"
+    return
+    ;;
+  esac
+  relative_path "$path"
+}
+
+json_path() {
+  local path="$1"
+  if [ "$PATH_STYLE_EXPLICIT" -eq 1 ]; then
+    display_path "$path"
+    return
+  fi
+  if [ "${#SCAN_ROOT_CANONS[@]}" -le 1 ]; then
+    relative_path "$path"
+    return
   fi
   printf '%s' "$path"
 }
@@ -513,7 +562,7 @@ discover_repos() {
 
     if [ "${#EXCLUDE_PATTERNS[@]}" -gt 0 ]; then
       local rel_path
-      rel_path="$(display_path "$normalized_root")"
+      rel_path="$(relative_path "$normalized_root")"
       local pat excluded=0
       for pat in "${EXCLUDE_PATTERNS[@]}"; do
         if [[ "$rel_path" =~ $pat ]]; then
@@ -1651,18 +1700,7 @@ format_vcs_type_minimal() {
 
 format_repo_name_minimal() {
   local idx="$1"
-  local root="${REPO_ROOTS[$idx]%/}"
-  local name
-  if [ -z "$root" ]; then
-    printf '/'
-    return
-  fi
-  name="${root##*/}"
-  if [ -z "$name" ]; then
-    printf '%s' "$root"
-  else
-    printf '%s' "$name"
-  fi
+  display_path "${REPO_ROOTS[$idx]}"
 }
 
 format_push_minimal() {
@@ -2039,7 +2077,7 @@ print_json_view() {
       continue
     fi
     local path_plain
-    path_plain="$(display_path "${REPO_ROOTS[$i]}")"
+    path_plain="$(json_path "${REPO_ROOTS[$i]}")"
     [ "$first" -eq 0 ] && printf ',\n'
     first=0
     printf '    {\n'
@@ -2154,6 +2192,11 @@ parse_args() {
     -o | --output)
       [ "$#" -ge 2 ] || die "--output requires a value"
       set_output_format "$2"
+      shift
+      ;;
+    -p | --paths)
+      [ "$#" -ge 2 ] || die "--paths requires a value"
+      set_path_style "$2"
       shift
       ;;
     -N | --no-color)

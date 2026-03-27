@@ -213,25 +213,6 @@ assert_default_jobs_floor() {
   [ "$max_active" -ge 8 ] || fail "expected auto-detected default jobs floor to reach at least 8 workers, saw $max_active"
 }
 
-assert_theme_rejected_for_json() {
-  local workspace="$1"
-  local stdout_file="$TMP_ROOT/json-theme.stdout"
-  local stderr_file="$TMP_ROOT/json-theme.stderr"
-  local status_file="$TMP_ROOT/json-theme.status"
-  local status=0
-
-  set +e
-  env LC_ALL=C TZ=UTC COLUMNS=80 NO_COLOR=1 "$CLI" --output json --theme fancy "$workspace" >"$stdout_file" 2>"$stderr_file"
-  status=$?
-  set -e
-  printf '%s\n' "$status" >"$status_file"
-
-  [ "$status" -ne 0 ] || fail "expected --theme fancy with --output json to fail"
-  grep -F -- '--theme is only supported for human-readable output' "$stderr_file" >/dev/null ||
-    fail "expected json theme error message"
-  [ ! -s "$stdout_file" ] || fail "expected json theme failure to avoid stdout output"
-}
-
 assert_minimal_rejects_detail() {
   local workspace="$1"
   local stdout_file="$TMP_ROOT/minimal-detail.stdout"
@@ -269,23 +250,6 @@ assert_minimal_uses_repo_basename() {
   if grep -F 'parent/child/nested-repo' "$stdout_file" >/dev/null 2>&1; then
     fail "expected minimal output to avoid relative path names"
   fi
-}
-
-assert_theme_and_no_color_aliases() {
-  local workspace="$1"
-  local long_stdout="$TMP_ROOT/theme-long.stdout"
-  local long_stderr="$TMP_ROOT/theme-long.stderr"
-  local long_status="$TMP_ROOT/theme-long.status"
-  local short_stdout="$TMP_ROOT/theme-short.stdout"
-  local short_stderr="$TMP_ROOT/theme-short.stderr"
-  local short_status="$TMP_ROOT/theme-short.status"
-
-  run_cli "$long_stdout" "$long_stderr" "$long_status" --output detail --theme fancy --no-color "$workspace/ahead-dirty"
-  run_cli "$short_stdout" "$short_stderr" "$short_status" --output detail -t fancy -N "$workspace/ahead-dirty"
-
-  compare_file "theme alias stdout" "$long_stdout" "$short_stdout"
-  compare_file "theme alias stderr" "$long_stderr" "$short_stderr"
-  compare_file "theme alias status" "$long_status" "$short_status"
 }
 
 assert_jj_discovery_prefers_jj() {
@@ -510,15 +474,13 @@ main() {
   assert_snapshot "exclude-single" "$workspace" --jobs 1 --exclude 'no-remote'
   assert_snapshot "exclude-multi" "$workspace" --jobs 1 --exclude 'no-remote' --exclude 'clean'
   assert_snapshot "detail" "$workspace/ahead-dirty" --jobs 1 --output detail
-  assert_snapshot "detail-fancy" "$workspace/ahead-dirty" --jobs 1 --output detail --theme fancy
+  assert_snapshot "detail-fancy" "$workspace/ahead-dirty" --jobs 1 --output fancy-detail
   assert_snapshot "format-json" "$workspace" --jobs 1 --output json
   assert_snapshot "format-json-detail" "$workspace/ahead-dirty" --jobs 1 --output json --detail
   assert_jobs_consistent "$workspace"
   assert_default_jobs_floor
-  assert_theme_rejected_for_json "$workspace"
   assert_minimal_rejects_detail "$workspace"
   assert_minimal_uses_repo_basename
-  assert_theme_and_no_color_aliases "$workspace"
   assert_jj_discovery_prefers_jj
   assert_jj_work_state_uses_diff_only
   assert_jj_push_state_defers_draft_count

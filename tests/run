@@ -276,10 +276,18 @@ assert_detail_alias_matches_output_precedence() {
 assert_path_display() {
   local workspace="$TMP_ROOT/path-display-workspace"
   local nested_repo="$workspace/parent/child/nested-repo"
+  local duplicate_a="$workspace/apps/service"
+  local duplicate_b="$workspace/tools/service"
 
   init_git_repo "$nested_repo"
   write_file "$nested_repo/file.txt" $'hello\n'
   commit_all "$nested_repo" "Initial commit" "2024-01-06T00:00:00 +0000"
+  init_git_repo "$duplicate_a"
+  write_file "$duplicate_a/file.txt" $'alpha\n'
+  commit_all "$duplicate_a" "Initial commit" "2024-01-06T00:00:00 +0000"
+  init_git_repo "$duplicate_b"
+  write_file "$duplicate_b/file.txt" $'beta\n'
+  commit_all "$duplicate_b" "Initial commit" "2024-01-06T00:00:00 +0000"
 
   # Default table view shows basename
   local table_stdout="$TMP_ROOT/path-table.stdout"
@@ -287,10 +295,9 @@ assert_path_display() {
   local table_status="$TMP_ROOT/path-table.status"
   run_cli "$table_stdout" "$table_stderr" "$table_status" --jobs 1 "$workspace"
   [ ! -s "$table_stderr" ] || fail "expected table path-display to avoid stderr"
-  grep -E '^nested-repo  \[git\]' "$table_stdout" >/dev/null || fail "expected table output to show repo basename by default"
-  if grep -F 'parent/child/nested-repo' "$table_stdout" >/dev/null 2>&1; then
-    fail "expected table output to avoid relative paths by default"
-  fi
+  grep -E '^parent/child/nested-repo  \[git\]' "$table_stdout" >/dev/null || fail "expected table output to fall back to relative paths when basenames collide"
+  grep -E '^apps/service +\[git\]' "$table_stdout" >/dev/null || fail "expected table output to disambiguate duplicate basenames with relative paths"
+  grep -E '^tools/service +\[git\]' "$table_stdout" >/dev/null || fail "expected table output to disambiguate duplicate basenames with relative paths"
 
   # Default minimal view shows basename
   local minimal_stdout="$TMP_ROOT/path-minimal.stdout"
@@ -298,10 +305,19 @@ assert_path_display() {
   local minimal_status="$TMP_ROOT/path-minimal.status"
   run_cli "$minimal_stdout" "$minimal_stderr" "$minimal_status" --jobs 1 --output minimal "$workspace"
   [ ! -s "$minimal_stderr" ] || fail "expected minimal path-display to avoid stderr"
-  grep -E '^nested-repo  g ' "$minimal_stdout" >/dev/null || fail "expected minimal output to show repo basename by default"
-  if grep -F 'parent/child/nested-repo' "$minimal_stdout" >/dev/null 2>&1; then
-    fail "expected minimal output to avoid relative paths by default"
-  fi
+  grep -E '^parent/child/nested-repo  g ' "$minimal_stdout" >/dev/null || fail "expected minimal output to fall back to relative paths when basenames collide"
+  grep -E '^apps/service +g ' "$minimal_stdout" >/dev/null || fail "expected minimal output to disambiguate duplicate basenames with relative paths"
+  grep -E '^tools/service +g ' "$minimal_stdout" >/dev/null || fail "expected minimal output to disambiguate duplicate basenames with relative paths"
+
+  # Default detail view also falls back to relative paths
+  local detail_stdout="$TMP_ROOT/path-detail.stdout"
+  local detail_stderr="$TMP_ROOT/path-detail.stderr"
+  local detail_status="$TMP_ROOT/path-detail.status"
+  run_cli "$detail_stdout" "$detail_stderr" "$detail_status" --jobs 1 --output detail "$workspace"
+  [ ! -s "$detail_stderr" ] || fail "expected detail path-display to avoid stderr"
+  grep -F -- '-- parent/child/nested-repo  [git]' "$detail_stdout" >/dev/null || fail "expected detail output to use relative paths when basenames collide"
+  grep -F -- '-- apps/service  [git]' "$detail_stdout" >/dev/null || fail "expected detail output to disambiguate duplicate basenames with relative paths"
+  grep -F -- '-- tools/service  [git]' "$detail_stdout" >/dev/null || fail "expected detail output to disambiguate duplicate basenames with relative paths"
 
   # --paths relative shows relative path
   local rel_stdout="$TMP_ROOT/path-relative.stdout"
@@ -346,6 +362,11 @@ assert_json_paths_stable() {
   local repo_a="$dir_a/service"
   local repo_b="$dir_b/service"
   local repo_a_canon repo_b_canon
+  local root_rel_stdout="$TMP_ROOT/json-multi-relative.stdout"
+  local root_rel_stderr="$TMP_ROOT/json-multi-relative.stderr"
+  local root_rel_status="$TMP_ROOT/json-multi-relative.status"
+  local root_dir_a="$TMP_ROOT/json-root-a"
+  local root_dir_b="$TMP_ROOT/json-root-b"
 
   init_git_repo "$nested_repo"
   write_file "$nested_repo/file.txt" $'hello\n'
@@ -374,6 +395,23 @@ assert_json_paths_stable() {
     fail "expected multi-root json output to use full paths for uniqueness"
   grep -F "\"path\": \"$repo_b_canon\"" "$multi_stdout" >/dev/null ||
     fail "expected multi-root json output to use full paths for uniqueness"
+
+  init_git_repo "$root_dir_a"
+  write_file "$root_dir_a/file.txt" $'root-a\n'
+  commit_all "$root_dir_a" "Initial commit" "2024-01-06T00:00:00 +0000"
+  init_git_repo "$root_dir_b"
+  write_file "$root_dir_b/file.txt" $'root-b\n'
+  commit_all "$root_dir_b" "Initial commit" "2024-01-06T00:00:00 +0000"
+
+  run_cli "$root_rel_stdout" "$root_rel_stderr" "$root_rel_status" --jobs 1 --paths relative "$root_dir_a" "$root_dir_b"
+  [ ! -s "$root_rel_stderr" ] || fail "expected multi-root --paths relative run to avoid stderr"
+  grep -E '^json-root-a +\[git\]' "$root_rel_stdout" >/dev/null ||
+    fail "expected exact-root repo under --paths relative to use the scan-root basename in multi-root output"
+  grep -E '^json-root-b +\[git\]' "$root_rel_stdout" >/dev/null ||
+    fail "expected exact-root repo under --paths relative to use the scan-root basename in multi-root output"
+  if grep -F "$root_dir_a" "$root_rel_stdout" >/dev/null 2>&1 || grep -F "$root_dir_b" "$root_rel_stdout" >/dev/null 2>&1; then
+    fail "expected multi-root --paths relative output to avoid absolute paths for exact-root repos"
+  fi
 }
 
 assert_jj_discovery_prefers_jj() {

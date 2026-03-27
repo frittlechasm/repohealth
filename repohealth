@@ -1180,21 +1180,18 @@ collect_jj_work_state() {
     return
   fi
 
-  local status_output
-  if ! status_output="$(jj -R "$root" status 2>&1)"; then
-    warn "JJ working-copy check failed for $root: $(first_nonempty_line "$status_output")"
-    set_work_status "$idx" "error" "!! scan error" "$(first_nonempty_line "$status_output")"
-    return
-  fi
-
-  if contains_line "$status_output" "The working copy has no changes."; then
-    set_work_status "$idx" "clean" "- clean"
+  local diff_output
+  if ! diff_output="$(jj -R "$root" diff --name-only 2>&1)"; then
+    warn "JJ working-copy check failed for $root: $(first_nonempty_line "$diff_output")"
+    set_work_status "$idx" "error" "!! scan error" "$(first_nonempty_line "$diff_output")"
     return
   fi
 
   local modified
-  modified="$(jj -R "$root" diff --name-only 2>/dev/null | awk 'NF { count++ } END { print count + 0 }')"
-  if [ -z "$modified" ]; then
+  if [ -n "$diff_output" ]; then
+    modified="$(printf '%s\n' "$diff_output" | awk 'NF { count++ } END { print count + 0 }')"
+  fi
+  if [ -z "${modified:-}" ]; then
     modified=0
   fi
 

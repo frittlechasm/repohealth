@@ -253,6 +253,56 @@ assert_jj_discovery_prefers_jj() {
   fi
 }
 
+assert_jj_work_state_uses_diff_only() {
+  local workspace="$TMP_ROOT/jj-workspace"
+  local fakebin="$TMP_ROOT/jj-work-bin"
+  local stdout_file="$TMP_ROOT/jj-work.stdout"
+  local stderr_file="$TMP_ROOT/jj-work.stderr"
+  local status_file="$TMP_ROOT/jj-work.status"
+  local jj_calls_file="$TMP_ROOT/jj-work.jj-calls"
+  local git_calls_file="$TMP_ROOT/jj-work.git-calls"
+
+  mkdir -p "$workspace" "$fakebin"
+  mkdir -p "$workspace/jj-clean/.jj" "$workspace/jj-dirty/.jj" "$workspace/mixed/.jj" "$workspace/mixed/.git"
+
+  write_file "$jj_calls_file" ''
+  write_file "$git_calls_file" ''
+
+  write_executable "$fakebin/jj" $'#!/usr/bin/env bash\nset -euo pipefail\ncalls_file="${REPOHEALTH_TEST_JJ_CALLS_FILE:?}"\nprintf \'%s\\n\' "$*" >>"$calls_file"\n\nif [ "${1:-}" != "-R" ]; then\n  printf \'unexpected jj invocation: %s\\n\' "$*" >&2\n  exit 1\nfi\nroot="${2:-}"\nrepo_name="${root##*/}"\nshift 2\n\ncase "${1:-}" in\n  status)\n    printf \'jj status should not be called\\n\' >&2\n    exit 99\n    ;;\n  diff)\n    if [ "${2:-}" != "--name-only" ]; then\n      printf \'unexpected jj diff invocation: %s\\n\' "$*" >&2\n      exit 1\n    fi\n    case "$repo_name" in\n      jj-clean)\n        exit 0\n        ;;\n      jj-dirty)\n        printf \'alpha.txt\\nbeta.txt\\n\'\n        exit 0\n        ;;\n      mixed)\n        printf \'jj diff should not run for mixed repo\\n\' >&2\n        exit 88\n        ;;\n    esac\n    ;;\n  log)\n    if [ "${3:-}" = "--count" ] || [ "${4:-}" = "--count" ]; then\n      printf \'0\\n\'\n      exit 0\n    fi\n    exit 0\n    ;;\n  git)\n    if [ "${2:-}" = "remote" ]; then\n      exit 0\n    fi\n    printf \'unexpected jj git invocation: %s\\n\' "$*" >&2\n    exit 1\n    ;;\n esac\n\nprintf \'unexpected jj invocation: %s\\n\' "$*" >&2\nexit 1\n'
+
+  write_executable "$fakebin/git" $'#!/usr/bin/env bash\nset -euo pipefail\ncalls_file="${REPOHEALTH_TEST_GIT_CALLS_FILE:?}"\nprintf \'%s\\n\' "$*" >>"$calls_file"\n\nroot=""\nif [ "${1:-}" = "-C" ]; then\n  root="${2:-}"\n  shift 2\nfi\n\ncase "${1:-}" in\n  status)\n    if [ "${root##*/}" = "mixed" ]; then\n      printf \' M tracked.txt\\n\'\n    fi\n    exit 0\n    ;;\n esac\n\nprintf \'unexpected git invocation: %s\\n\' "$*" >&2\nexit 1\n'
+
+  local status=0
+  set +e
+  env \
+    LC_ALL=C \
+    TZ=UTC \
+    COLUMNS=80 \
+    NO_COLOR=1 \
+    PATH="$fakebin:$PATH" \
+    REPOHEALTH_TEST_JJ_CALLS_FILE="$jj_calls_file" \
+    REPOHEALTH_TEST_GIT_CALLS_FILE="$git_calls_file" \
+    "$CLI" --jobs 1 "$workspace" >"$stdout_file" 2>"$stderr_file"
+  status=$?
+  set -e
+  printf '%s\n' "$status" >"$status_file"
+
+  [ "$status" -eq 0 ] || fail "jj work-state run failed with status $status"
+  [ ! -s "$stderr_file" ] || fail "jj work-state run wrote unexpected stderr"
+
+  grep -E 'jj-clean +\[jj\].*\|  - clean *$' "$stdout_file" >/dev/null || fail "expected clean jj repo to remain clean"
+  grep -E 'jj-dirty +\[jj\].*\|  \* 2 modified *$' "$stdout_file" >/dev/null || fail "expected dirty jj repo to report two modified files"
+  grep -E 'mixed +\[jj\].*\|  \* 1 modified *$' "$stdout_file" >/dev/null || fail "expected mixed repo to use git work-state fallback"
+
+  if grep -F ' status' "$jj_calls_file" >/dev/null 2>&1; then
+    fail "expected jj work-state collection to avoid jj status"
+  fi
+  if grep -F -- "$workspace/mixed diff --name-only" "$jj_calls_file" >/dev/null 2>&1; then
+    fail "expected mixed repo to skip jj diff work-state collection"
+  fi
+  grep -E -- '-C .*/mixed status --porcelain=v1 --untracked-files=normal$' "$git_calls_file" >/dev/null || fail "expected mixed repo to use git status for work-state fallback"
+}
+
 main() {
   trap cleanup EXIT
 
@@ -278,6 +328,7 @@ main() {
   assert_jobs_consistent "$workspace"
   assert_default_jobs_floor
   assert_jj_discovery_prefers_jj
+  assert_jj_work_state_uses_diff_only
 
   # multi-directory: scan two separate roots
   local dir_a="$TMP_ROOT/multi-a"

@@ -33,6 +33,13 @@ write_file() {
   printf '%s' "$content" >"$path"
 }
 
+write_executable() {
+  local path="$1"
+  local content="$2"
+  write_file "$path" "$content"
+  chmod +x "$path"
+}
+
 init_git_repo() {
   local path="$1"
   mkdir -p "$path"
@@ -161,6 +168,51 @@ assert_jobs_consistent() {
   compare_file "jobs status" "$seq_status" "$par_status"
 }
 
+assert_default_jobs_floor() {
+  local workspace="$TMP_ROOT/default-jobs-workspace"
+  local fakebin="$TMP_ROOT/default-jobs-bin"
+  local stdout_file="$TMP_ROOT/default-jobs.stdout"
+  local stderr_file="$TMP_ROOT/default-jobs.stderr"
+  local status_file="$TMP_ROOT/default-jobs.status"
+  local active_file="$TMP_ROOT/default-jobs.active"
+  local max_file="$TMP_ROOT/default-jobs.max"
+  local lock_dir="$TMP_ROOT/default-jobs.lock"
+  local i max_active
+
+  mkdir -p "$workspace" "$fakebin"
+  for i in $(seq 1 16); do
+    mkdir -p "$workspace/repo-$i/.git"
+  done
+
+  write_file "$active_file" $'0\n'
+  write_file "$max_file" $'0\n'
+
+  write_executable "$fakebin/getconf" $'#!/usr/bin/env bash\nif [ "${1:-}" = "_NPROCESSORS_ONLN" ]; then\n  printf \'4\\n\'\nelse\n  /usr/bin/getconf "$@"\nfi\n'
+  write_executable "$fakebin/git" $'#!/usr/bin/env bash\nset -euo pipefail\n\nif [ "${1:-}" = "-C" ]; then\n  shift 2\nfi\n\nif [ "${1:-}" != "status" ]; then\n  printf \'unsupported fake git command: %s\\n\' "${1:-}" >&2\n  exit 1\nfi\n\nlock_dir="${REPOHEALTH_TEST_LOCK_DIR:?}"\nactive_file="${REPOHEALTH_TEST_ACTIVE_FILE:?}"\nmax_file="${REPOHEALTH_TEST_MAX_FILE:?}"\n\nlock() {\n  while ! mkdir "$lock_dir" 2>/dev/null; do\n    sleep 0.01\n  done\n}\n\nunlock() {\n  rmdir "$lock_dir"\n}\n\nlock\nactive="$(cat "$active_file" 2>/dev/null || printf \'0\')"\nactive=$((active + 1))\nprintf \'%s\\n\' "$active" >"$active_file"\nmax_active="$(cat "$max_file" 2>/dev/null || printf \'0\')"\nif [ "$active" -gt "$max_active" ]; then\n  printf \'%s\\n\' "$active" >"$max_file"\nfi\nunlock\n\nsleep 0.25\n\nlock\nactive="$(cat "$active_file" 2>/dev/null || printf \'0\')"\nif [ "$active" -gt 0 ]; then\n  active=$((active - 1))\nfi\nprintf \'%s\\n\' "$active" >"$active_file"\nunlock\n\nprintf \'# branch.oid %s\\n\' \'0123456789abcdef0123456789abcdef01234567\'\nprintf \'# branch.head main\\n\'\nprintf \'# branch.upstream origin/main\\n\'\nprintf \'# branch.ab +0 -0\\n\'\n'
+
+  local status=0
+  set +e
+  env \
+    LC_ALL=C \
+    TZ=UTC \
+    COLUMNS=80 \
+    NO_COLOR=1 \
+    PATH="$fakebin:$PATH" \
+    REPOHEALTH_TEST_ACTIVE_FILE="$active_file" \
+    REPOHEALTH_TEST_MAX_FILE="$max_file" \
+    REPOHEALTH_TEST_LOCK_DIR="$lock_dir" \
+    "$CLI" "$workspace" >"$stdout_file" 2>"$stderr_file"
+  status=$?
+  set -e
+  printf '%s\n' "$status" >"$status_file"
+
+  [ "$status" -eq 0 ] || fail "default jobs floor run failed with status $status"
+  [ ! -s "$stderr_file" ] || fail "default jobs floor run wrote unexpected stderr"
+
+  max_active="$(cat "$max_file")"
+  [ "$max_active" -ge 8 ] || fail "expected auto-detected default jobs floor to reach at least 8 workers, saw $max_active"
+}
+
 main() {
   trap cleanup EXIT
 
@@ -184,6 +236,7 @@ main() {
   assert_snapshot "format-json" "$workspace" --jobs 1 --output json
   assert_snapshot "format-json-detail" "$workspace/ahead-dirty" --jobs 1 --output json --detail
   assert_jobs_consistent "$workspace"
+  assert_default_jobs_floor
 
   # multi-directory: scan two separate roots
   local dir_a="$TMP_ROOT/multi-a"

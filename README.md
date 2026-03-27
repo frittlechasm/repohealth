@@ -44,7 +44,7 @@ If `directory` is omitted, the current directory is scanned.
 - `-c`, `--check` exits non-zero when any repo needs attention.
 - `-e`, `--exclude PATTERN` skips repos whose path matches the ERE. May be repeated to exclude multiple patterns.
 - `-r`, `--remote NAME` overrides the remote used for Jujutsu push checks.
-- `-j`, `--jobs N` limits parallel repo-state workers. Use `--jobs 1` for sequential collection.
+- `-j`, `--jobs N` limits parallel repo-state workers. By default, repohealth auto-detects CPU count with a floor of 8 workers. Use `--jobs 1` for sequential collection.
 - `-o`, `--output FORMAT` sets the output format. Supported values: `json`, `fancy`, `no-color`.
 - `-D`, `--detail` prints expanded per-repo sections.
 - `-h`, `--help` shows the help text.

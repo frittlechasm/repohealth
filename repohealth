@@ -254,6 +254,9 @@ default_parallel_jobs() {
   if ! is_integer "$jobs" || [ "$jobs" -lt 1 ]; then
     jobs=4
   fi
+  if [ "$jobs" -lt 8 ]; then
+    jobs=8
+  fi
   printf '%s' "$jobs"
 }
 

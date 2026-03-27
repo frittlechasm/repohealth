@@ -303,6 +303,94 @@ assert_jj_work_state_uses_diff_only() {
   grep -E -- '-C .*/mixed status --porcelain=v1 --untracked-files=normal$' "$git_calls_file" >/dev/null || fail "expected mixed repo to use git status for work-state fallback"
 }
 
+assert_jj_push_state_defers_draft_count() {
+  local workspace="$TMP_ROOT/jj-push-workspace"
+  local fakebin="$TMP_ROOT/jj-push-bin"
+  local stdout_file="$TMP_ROOT/jj-push.stdout"
+  local stderr_file="$TMP_ROOT/jj-push.stderr"
+  local status_file="$TMP_ROOT/jj-push.status"
+  local calls_file="$TMP_ROOT/jj-push.calls"
+
+  mkdir -p "$workspace" "$fakebin"
+  mkdir -p \
+    "$workspace/clean-remote/.jj" \
+    "$workspace/draft-only/.jj" \
+    "$workspace/outgoing/.jj" \
+    "$workspace/no-remote/.jj"
+
+  write_file "$calls_file" ''
+
+  write_executable "$fakebin/jj" $'#!/usr/bin/env bash\nset -euo pipefail\ncalls_file="${REPOHEALTH_TEST_JJ_CALLS_FILE:?}"\nprintf \'%s\\n\' "$*" >>"$calls_file"\n\nif [ "${1:-}" != "-R" ]; then\n  printf \'unexpected jj invocation: %s\\n\' "$*" >&2\n  exit 1\nfi\nroot="${2:-}"\nrepo_name="${root##*/}"\nshift 2\n\ncase "${1:-}" in\n  diff)\n    if [ "${2:-}" != "--name-only" ]; then\n      printf \'unexpected jj diff invocation: %s\\n\' "$*" >&2\n      exit 1\n    fi\n    exit 0\n    ;;\n  git)\n    case "${2:-}" in\n      remote)\n        case "$repo_name" in\n          no-remote)\n            exit 0\n            ;;\n          *)\n            printf \'origin\\n\'\n            exit 0\n            ;;\n        esac\n        ;;\n      push)\n        case "$repo_name" in\n          clean-remote)\n            printf \'Nothing changed.\\nDry-run requested, not pushing.\\n\'\n            exit 0\n            ;;\n          draft-only)\n            printf \'Warning: No bookmarks found in the default push revset: remote_bookmarks(remote=origin)..@\\nNothing changed.\\nDry-run requested, not pushing.\\n\'\n            exit 0\n            ;;\n          outgoing)\n            printf \'Changes to push to origin:\\n  Move bookmark main from 11111111 to 22222222\\nDry-run requested, not pushing.\\n\'\n            exit 0\n            ;;\n          no-remote)\n            printf \'jj git push should not run for no-remote\\n\' >&2\n            exit 88\n            ;;\n        esac\n        ;;\n    esac\n    ;;\n  log)\n    if [[ "$*" == *"reachable(@, mutable()) ~ ::bookmarks() ~ @"* ]]; then\n      case "$repo_name" in\n        draft-only|outgoing)\n          printf \'2\\n\'\n          ;;\n        no-remote)\n          printf \'0\\n\'\n          ;;\n        clean-remote)\n          printf \'clean-remote draft count should be skipped\\n\' >&2\n          exit 77\n          ;;\n      esac\n      exit 0\n    fi\n    if [[ "$*" == *"::bookmarks() ~ ::remote_bookmarks(remote=origin)"* ]]; then\n      printf \'1\\n\'\n      exit 0\n    fi\n    ;;\n esac\n\nprintf \'unexpected jj invocation: %s\\n\' "$*" >&2\nexit 1\n'
+
+  local status=0
+  set +e
+  env \
+    LC_ALL=C \
+    TZ=UTC \
+    COLUMNS=80 \
+    NO_COLOR=1 \
+    PATH="$fakebin:$PATH" \
+    REPOHEALTH_TEST_JJ_CALLS_FILE="$calls_file" \
+    "$CLI" --jobs 1 "$workspace" >"$stdout_file" 2>"$stderr_file"
+  status=$?
+  set -e
+  printf '%s\n' "$status" >"$status_file"
+
+  [ "$status" -eq 0 ] || fail "jj push-state run failed with status $status"
+  [ ! -s "$stderr_file" ] || fail "jj push-state run wrote unexpected stderr"
+
+  grep -E 'clean-remote +\[jj\].*- up to date.*\|  - clean *$' "$stdout_file" >/dev/null || fail "expected clean remote jj repo to remain up to date"
+  grep -E 'draft-only +\[jj\].*~ 2 draft only.*\|  - clean *$' "$stdout_file" >/dev/null || fail "expected draft-only jj repo to report draft-only state"
+  grep -E 'outgoing +\[jj\].*↑ 1 outgoing \(\+2 draft\).*\|  - clean *$' "$stdout_file" >/dev/null || fail "expected outgoing jj repo to include draft suffix"
+  grep -E 'no-remote +\[jj\].*\? no remote.*\|  - clean *$' "$stdout_file" >/dev/null || fail "expected no-remote jj repo to report missing remote"
+
+  if grep -F 'clean-remote log -r reachable(@, mutable()) ~ ::bookmarks() ~ @' "$calls_file" >/dev/null 2>&1; then
+    fail "expected clean JJ repo with remotes to skip draft counting"
+  fi
+  grep -F 'draft-only log -r reachable(@, mutable()) ~ ::bookmarks() ~ @' "$calls_file" >/dev/null || fail "expected draft-only jj repo to count drafts"
+  grep -F 'outgoing log -r reachable(@, mutable()) ~ ::bookmarks() ~ @' "$calls_file" >/dev/null || fail "expected outgoing jj repo to count drafts for suffix reporting"
+  grep -F 'no-remote log -r reachable(@, mutable()) ~ ::bookmarks() ~ @' "$calls_file" >/dev/null || fail "expected no-remote jj repo to count drafts for classification"
+  if grep -F 'no-remote git push --dry-run' "$calls_file" >/dev/null 2>&1; then
+    fail "expected no-remote jj repo to skip dry-run push"
+  fi
+}
+
+assert_jj_push_detail_preserves_draft_detail() {
+  local workspace="$TMP_ROOT/jj-push-detail-workspace"
+  local fakebin="$TMP_ROOT/jj-push-detail-bin"
+  local stdout_file="$TMP_ROOT/jj-push-detail.stdout"
+  local stderr_file="$TMP_ROOT/jj-push-detail.stderr"
+  local status_file="$TMP_ROOT/jj-push-detail.status"
+
+  mkdir -p "$workspace" "$fakebin"
+  mkdir -p "$workspace/outgoing/.jj"
+
+  write_executable "$fakebin/jj" $'#!/usr/bin/env bash\nset -euo pipefail\n\nif [ "${1:-}" != "-R" ]; then\n  printf \'unexpected jj invocation: %s\\n\' "$*" >&2\n  exit 1\nfi\nroot="${2:-}"\nrepo_name="${root##*/}"\nshift 2\n\ncase "${1:-}" in\n  diff)\n    if [ "${2:-}" != "--name-only" ]; then\n      printf \'unexpected jj diff invocation: %s\\n\' "$*" >&2\n      exit 1\n    fi\n    exit 0\n    ;;\n  git)\n    case "${2:-}" in\n      remote)\n        printf \'origin\\n\'\n        exit 0\n        ;;\n      push)\n        printf \'Changes to push to origin:\\n  Move bookmark main from 11111111 to 22222222\\nDry-run requested, not pushing.\\n\'\n        exit 0\n        ;;\n    esac\n    ;;\n  log)\n    if [[ "$*" == *"reachable(@, mutable()) ~ ::bookmarks() ~ @"* ]]; then\n      if [[ "$*" == *"--count"* ]]; then\n        printf \'2\\n\'\n      else\n        printf \'draft-1 first draft\\ndraft-2 second draft\\n\'\n      fi\n      exit 0\n    fi\n    if [[ "$*" == *"::bookmarks() ~ ::remote_bookmarks(remote=origin)"* ]]; then\n      if [[ "$*" == *"--count"* ]]; then\n        printf \'1\\n\'\n      else\n        printf \'__COMMIT__\\tfeedface\\tPush change\\n3\\t1\\tsrc/main.txt\\n__END__\\n\'\n      fi\n      exit 0\n    fi\n    ;;\n esac\n\nprintf \'unexpected jj invocation: %s\\n\' "$*" >&2\nexit 1\n'
+
+  local status=0
+  set +e
+  env \
+    LC_ALL=C \
+    TZ=UTC \
+    COLUMNS=80 \
+    NO_COLOR=1 \
+    PATH="$fakebin:$PATH" \
+    "$CLI" --jobs 1 --output json --detail "$workspace" >"$stdout_file" 2>"$stderr_file"
+  status=$?
+  set -e
+  printf '%s\n' "$status" >"$status_file"
+
+  [ "$status" -eq 0 ] || fail "jj push detail run failed with status $status"
+  [ ! -s "$stderr_file" ] || fail "jj push detail run wrote unexpected stderr"
+
+  grep -F '"text": "↑ 1 outgoing (+2 draft)"' "$stdout_file" >/dev/null || fail "expected JJ detail output to preserve outgoing draft suffix"
+  grep -F '"drafts": [' "$stdout_file" >/dev/null || fail "expected JJ detail output to include draft detail array"
+  grep -F '"draft-1 first draft"' "$stdout_file" >/dev/null || fail "expected JJ detail output to include first draft entry"
+  grep -F '"draft-2 second draft"' "$stdout_file" >/dev/null || fail "expected JJ detail output to include second draft entry"
+  grep -F '"title": "feedface Push change"' "$stdout_file" >/dev/null || fail "expected JJ detail output to include outgoing commit detail"
+  grep -F '"path": "src/main.txt"' "$stdout_file" >/dev/null || fail "expected JJ detail output to include outgoing file stats"
+}
+
 main() {
   trap cleanup EXIT
 
@@ -329,6 +417,8 @@ main() {
   assert_default_jobs_floor
   assert_jj_discovery_prefers_jj
   assert_jj_work_state_uses_diff_only
+  assert_jj_push_state_defers_draft_count
+  assert_jj_push_detail_preserves_draft_detail
 
   # multi-directory: scan two separate roots
   local dir_a="$TMP_ROOT/multi-a"

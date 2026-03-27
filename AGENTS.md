@@ -15,3 +15,4 @@
 - Use a two-pass render: collect repo data first, then print output after widths are known.
 - When changing or adding new rendered CLI output, update the snapshot fixtures as needed and run `./tests/run`.
 - When both `.git` and `.jj` exist at the same root, treat the repo as `jj`.
+- `jj git push --dry-run` may print `Nothing changed.` for both clean repos and draft-only repos when no bookmarks are in the default push revset; only skip draft counting on the unambiguous clean path.

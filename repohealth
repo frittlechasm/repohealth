@@ -1243,22 +1243,25 @@ collect_jj_push_state() {
   local idx="$1"
   local root="$2"
 
-  local draft_detail="" draft_count=""
-  if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
-    draft_detail="$(collect_jj_drafts "$root")"
-    draft_count="$(count_nonempty_lines "$draft_detail")"
-    set_draft_detail "$idx" "$draft_detail"
-  else
-    draft_count="$(count_jj_drafts "$root")"
-  fi
-  if [ -z "$draft_count" ] || ! is_integer "$draft_count"; then
-    draft_count=0
-  fi
+  local draft_detail="" draft_count=0 draft_loaded=0
 
   local remote_output remote_count
   remote_output="$(jj -R "$root" git remote list 2>/dev/null || true)"
   remote_count="$(count_nonempty_lines "$remote_output")"
   if [ "$remote_count" -eq 0 ] && [ -z "$REMOTE_OVERRIDE" ]; then
+    if [ "$draft_loaded" -eq 0 ]; then
+      if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
+        draft_detail="$(collect_jj_drafts "$root")"
+        draft_count="$(count_nonempty_lines "$draft_detail")"
+        set_draft_detail "$idx" "$draft_detail"
+      else
+        draft_count="$(count_jj_drafts "$root")"
+      fi
+      if [ -z "$draft_count" ] || ! is_integer "$draft_count"; then
+        draft_count=0
+      fi
+      draft_loaded=1
+    fi
     if [ "$draft_count" -gt 0 ]; then
       set_push_status "$idx" "draft" "~ ${draft_count} draft only" "draft commits are not pushable until bookmarked"
     else
@@ -1328,6 +1331,19 @@ collect_jj_push_state() {
         detail="$(build_jj_outgoing_detail "$root" "$dry_run_output")"
       fi
     fi
+    if [ "$draft_loaded" -eq 0 ]; then
+      if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
+        draft_detail="$(collect_jj_drafts "$root")"
+        draft_count="$(count_nonempty_lines "$draft_detail")"
+        set_draft_detail "$idx" "$draft_detail"
+      else
+        draft_count="$(count_jj_drafts "$root")"
+      fi
+      if [ -z "$draft_count" ] || ! is_integer "$draft_count"; then
+        draft_count=0
+      fi
+      draft_loaded=1
+    fi
     if [ "$draft_count" -gt 0 ]; then
       set_push_status "$idx" "outgoing" "↑ ${outgoing_count} outgoing (+${draft_count} draft)" "" "$detail"
     else
@@ -1341,6 +1357,25 @@ collect_jj_push_state() {
     return
   fi
 
+  if contains_line "$dry_run_output" "Nothing changed." &&
+    ! contains_line "$dry_run_output" "No bookmarks found in the default push revset"; then
+    set_push_status "$idx" "clean" "- up to date"
+    return
+  fi
+
+  if [ "$draft_loaded" -eq 0 ]; then
+    if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
+      draft_detail="$(collect_jj_drafts "$root")"
+      draft_count="$(count_nonempty_lines "$draft_detail")"
+      set_draft_detail "$idx" "$draft_detail"
+    else
+      draft_count="$(count_jj_drafts "$root")"
+    fi
+    if [ -z "$draft_count" ] || ! is_integer "$draft_count"; then
+      draft_count=0
+    fi
+    draft_loaded=1
+  fi
   if [ "$draft_count" -gt 0 ]; then
     set_push_status "$idx" "draft" "~ ${draft_count} draft only" "draft commits are not pushable until bookmarked"
     return

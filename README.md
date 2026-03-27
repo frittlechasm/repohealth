@@ -14,7 +14,7 @@ The script is designed for fast workspace sweeps where you want one aligned view
 - Reports Jujutsu outgoing commit counts, draft commits, and working-copy changes.
 - Collects per-repo state in parallel by default for faster workspace sweeps.
 - Supports a compact table view, a per-repo detail view, and JSON output.
-- In `--detail`, Jujutsu outgoing sections show a per-commit stat breakdown for pushable commits.
+- In detail output, Jujutsu outgoing sections show a per-commit stat breakdown for pushable commits.
 - Supports a check mode for scripting and automation.
 
 ## Requirements
@@ -45,8 +45,10 @@ If `directory` is omitted, the current directory is scanned.
 - `-e`, `--exclude PATTERN` skips repos whose path matches the ERE. May be repeated to exclude multiple patterns.
 - `-r`, `--remote NAME` overrides the remote used for Jujutsu push checks.
 - `-j`, `--jobs N` limits parallel repo-state workers. By default, repohealth auto-detects CPU count with a floor of 8 workers. Use `--jobs 1` for sequential collection.
-- `-o`, `--output FORMAT` sets the output format. Supported values: `json`, `fancy`, `no-color`.
-- `-D`, `--detail` prints expanded per-repo sections.
+- `-o`, `--output FORMAT` sets the output format. Supported values: `table`, `detail`, `json`.
+- `-t`, `--theme THEME` sets the human-output theme. Supported values: `default`, `fancy`.
+- `-N`, `--no-color` disables ANSI color output.
+- `-D`, `--detail` is a compatibility alias for `--output detail`; with `--output json`, it also includes detail fields.
 - `-h`, `--help` shows the help text.
 
 ## Examples
@@ -66,7 +68,7 @@ Show only repos that need attention:
 Get detailed per-repo output:
 
 ```bash
-./repohealth --detail ~/src
+./repohealth --output detail ~/src
 ```
 
 Use in a shell check or automation:
@@ -102,13 +104,13 @@ Output JSON with per-repo detail fields:
 Use enhanced block-char rendering:
 
 ```bash
-./repohealth --output fancy ~/src
+./repohealth --theme fancy ~/src
 ```
 
 Disable color output:
 
 ```bash
-./repohealth --output no-color ~/src
+./repohealth --no-color ~/src
 ```
 
 Force sequential collection for debugging:
@@ -161,7 +163,7 @@ At the end of every run, the script prints a summary line with scanned repo coun
 - Discovery skips common heavy directories such as `node_modules`, `vendor`, `target`, `__pycache__`, `.svn`, and `.hg`.
 - Linked Git worktrees referenced through `.git` files under `/worktrees/` are skipped intentionally.
 - When both `.git` and `.jj` are present at the same root, the repo is treated as `jj`.
-- In JSON output, detail fields (outgoing commits, draft commits, working-copy changes) are structured arrays, not raw strings. Detail fields are only populated when `--detail` is requested.
+- In JSON output, detail fields (outgoing commits, draft commits, working-copy changes) are structured arrays, not raw strings. Detail fields are only populated when `--detail` is requested alongside `--output json`.
 
 ## Validation Checklist
 
@@ -172,7 +174,7 @@ When changing the script, validate a few representative cases:
 - Scan a clean Git repo with an upstream.
 - Run `--dirty` against a fully clean repo and confirm it does not crash.
 - Compare `--jobs 1` and the default run on the same workspace and confirm output matches.
-- Run `--detail` and confirm the detailed sections remain aligned and readable.
+- Run `--output detail` and confirm the detailed sections remain aligned and readable.
 - If `jj` is installed, test a repo with draft commits and one with pushable bookmark changes.
 
 ## Snapshot Tests
@@ -191,7 +193,7 @@ For performance work, there is also a repeatable benchmark harness:
 ./tests/benchmark
 ```
 
-It compares the current script against baseline ref `4ebf75e` on synthetic Git and JJ workspaces and reports median timings for default, `--detail`, and job-count runs.
+It compares the current script against baseline ref `4ebf75e` on synthetic Git and JJ workspaces and reports median timings for default, detail-output, and job-count runs.
 
 ## Limitations
 

@@ -24,6 +24,7 @@ The script is designed for fast workspace sweeps where you want one aligned view
 - `awk`
 - `git` for Git repos
 - `jj` for Jujutsu repos
+- `fd` or `fdfind` is optional; used for faster repo discovery when available, falls back to `find`
 - `realpath` is optional; the script falls back to `pwd -P`
 
 The script is intended to work on both macOS and Linux.
@@ -38,14 +39,14 @@ If `directory` is omitted, the current directory is scanned.
 
 ### Options
 
-- `--dirty` shows only repos that are not fully clean.
-- `--depth N` limits traversal depth.
-- `--check` exits non-zero when any repo needs attention.
-- `--exclude PATTERN` skips repos whose path matches the ERE. May be repeated to exclude multiple patterns.
-- `--remote NAME` overrides the remote used for Jujutsu push checks.
-- `--jobs N` limits parallel repo-state workers. Use `--jobs 1` for sequential collection.
-- `--output FORMAT` sets the output format. Supported values: `json`, `fancy`, `no-color`.
-- `--detail` prints expanded per-repo sections.
+- `-d`, `--dirty` shows only repos that are not fully clean.
+- `-n`, `--depth N` limits traversal depth.
+- `-c`, `--check` exits non-zero when any repo needs attention.
+- `-e`, `--exclude PATTERN` skips repos whose path matches the ERE. May be repeated to exclude multiple patterns.
+- `-r`, `--remote NAME` overrides the remote used for Jujutsu push checks.
+- `-j`, `--jobs N` limits parallel repo-state workers. Use `--jobs 1` for sequential collection.
+- `-o`, `--output FORMAT` sets the output format. Supported values: `json`, `fancy`, `no-color`.
+- `-D`, `--detail` prints expanded per-repo sections.
 - `-h`, `--help` shows the help text.
 
 ## Examples
@@ -156,9 +157,11 @@ At the end of every run, the script prints a summary line with scanned repo coun
 - Output is collected first and rendered second so columns can be aligned consistently.
 - Repo state collection runs in bounded parallel batches; rendering happens in sorted path order for stable output.
 - Repo rows are written to stdout, while warnings and errors go to stderr.
+- Discovery uses `fd`/`fdfind` when available for faster traversal; falls back to `find` otherwise.
 - Discovery skips common heavy directories such as `node_modules`, `vendor`, `target`, `__pycache__`, `.svn`, and `.hg`.
 - Linked Git worktrees referenced through `.git` files under `/worktrees/` are skipped intentionally.
 - When both `.git` and `.jj` are present at the same root, the repo is treated as `jj`.
+- In JSON output, detail fields (outgoing commits, draft commits, working-copy changes) are structured arrays, not raw strings. Detail fields are only populated when `--detail` is requested.
 
 ## Validation Checklist
 

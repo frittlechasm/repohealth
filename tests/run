@@ -624,6 +624,35 @@ assert_jj_push_detail_preserves_draft_detail() {
   grep -F '"path": "src/main.txt"' "$stdout_file" >/dev/null || fail "expected JJ detail output to include outgoing file stats"
 }
 
+assert_repeated_short_exclude_flags() {
+  local workspace="$1"
+  local stdout_file="$TMP_ROOT/exclude-multi-short-flags.stdout"
+  local stderr_file="$TMP_ROOT/exclude-multi-short-flags.stderr"
+  local status_file="$TMP_ROOT/exclude-multi-short-flags.status"
+
+  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 -e 'no-remote' -e 'clean' "$workspace"
+
+  compare_file "exclude multi short flags stdout" "$FIXTURES_DIR/exclude-multi.stdout" "$stdout_file"
+  compare_file "exclude multi short flags stderr" "$FIXTURES_DIR/exclude-multi.stderr" "$stderr_file"
+  compare_file "exclude multi short flags status" "$FIXTURES_DIR/exclude-multi.status" "$status_file"
+}
+
+assert_excluded_linked_worktree_is_silent() {
+  local workspace="$TMP_ROOT/excluded-worktree-workspace"
+  local stdout_file="$TMP_ROOT/excluded-worktree.stdout"
+  local stderr_file="$TMP_ROOT/excluded-worktree.stderr"
+  local status_file="$TMP_ROOT/excluded-worktree.status"
+
+  mkdir -p "$workspace/worktrees/feature"
+  write_file "$workspace/worktrees/feature/.git" $'gitdir: /tmp/repo/.git/worktrees/feature\n'
+
+  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 -e 'worktrees' "$workspace"
+
+  [ "$(cat "$status_file")" -eq 0 ] || fail "expected excluded linked worktree run to succeed"
+  [ ! -s "$stderr_file" ] || fail "expected excluded linked worktree run to avoid stderr"
+  grep -F 'scanned: 0' "$stdout_file" >/dev/null || fail "expected excluded linked worktree run to scan zero repos"
+}
+
 main() {
   trap cleanup EXIT
 
@@ -657,6 +686,8 @@ main() {
   assert_jj_work_state_uses_diff_only
   assert_jj_push_state_defers_draft_count
   assert_jj_push_detail_preserves_draft_detail
+  assert_repeated_short_exclude_flags "$workspace"
+  assert_excluded_linked_worktree_is_silent
 
   # multi-directory: scan two separate roots
   local dir_a="$TMP_ROOT/multi-a"

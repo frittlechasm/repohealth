@@ -274,6 +274,22 @@ relative_path() {
   printf '%s' "$path"
 }
 
+path_is_excluded() {
+  local path="$1"
+  local rel_path pat
+
+  [ "${#EXCLUDE_PATTERNS[@]}" -gt 0 ] || return 1
+
+  rel_path="$(relative_path "$path")"
+  for pat in "${EXCLUDE_PATTERNS[@]}"; do
+    if [[ "$rel_path" =~ $pat ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 basename_path() {
   local path="$1"
   local base="${path%/}"
@@ -556,14 +572,6 @@ discover_repos() {
         */.git | */.git/*) continue ;;
       esac
     fi
-    type="git"
-    if [ "${marker##*/}" = ".jj" ]; then
-      type="jj"
-    elif [ -f "$marker" ] && is_linked_worktree_gitfile "$marker"; then
-      warn "Skipping linked worktree at $candidate"
-      continue
-    fi
-
     normalized_root="$candidate"
 
     normalized_root="$(canonicalize_dir "$normalized_root" 2>/dev/null || true)"
@@ -571,19 +579,16 @@ discover_repos() {
       normalized_root="$candidate"
     fi
 
-    if [ "${#EXCLUDE_PATTERNS[@]}" -gt 0 ]; then
-      local rel_path
-      rel_path="$(relative_path "$normalized_root")"
-      local pat excluded=0
-      for pat in "${EXCLUDE_PATTERNS[@]}"; do
-        if [[ "$rel_path" =~ $pat ]]; then
-          excluded=1
-          break
-        fi
-      done
-      if [ "$excluded" -eq 1 ]; then
-        continue
-      fi
+    if path_is_excluded "$normalized_root"; then
+      continue
+    fi
+
+    type="git"
+    if [ "${marker##*/}" = ".jj" ]; then
+      type="jj"
+    elif [ -f "$marker" ] && is_linked_worktree_gitfile "$marker"; then
+      warn "Skipping linked worktree at $candidate"
+      continue
     fi
 
     add_repo "$normalized_root" "$type"
@@ -2263,6 +2268,10 @@ parse_args() {
       ;;
     --)
       shift
+      while [ "$#" -gt 0 ]; do
+        SCAN_ROOTS+=("$1")
+        shift
+      done
       break
       ;;
     -*)

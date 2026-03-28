@@ -303,35 +303,6 @@ render_path_style() {
   esac
 }
 
-style_has_collision() {
-  local style="$1"
-  shift
-  [ "$#" -le 1 ] && return 1
-  local idx
-  for idx in "$@"; do
-    render_path_style "${REPO_ROOTS[$idx]}" "$style"
-    printf '\n'
-  done | sort | awk 'prev == $0 { found = 1; exit } { prev = $0 } END { exit found ? 0 : 1 }'
-}
-
-resolve_human_path_style() {
-  if [ "$PATH_STYLE_EXPLICIT" -eq 1 ]; then
-    printf '%s' "$PATH_STYLE"
-    return
-  fi
-
-  if style_has_collision "name" "$@"; then
-    if style_has_collision "relative" "$@"; then
-      printf 'full'
-    else
-      printf 'relative'
-    fi
-    return
-  fi
-
-  printf 'name'
-}
-
 json_path() {
   local path="$1"
   if [ "$PATH_STYLE_EXPLICIT" -eq 1 ]; then
@@ -1672,8 +1643,10 @@ pad_to_visual() {
   printf -v "$_var" "%-$((_target + _extra))s" "$_str"
 }
 
-# Populate _shown_indices and _path_style for the active view.
-# Must be called before each print_*_view; callers read _shown_indices / _path_style.
+# Populate _shown_indices and _DISP_NAMES for the active view.
+# Must be called before each print_*_view; callers declare:
+#   local -a _shown_indices=()
+#   local -a _DISP_NAMES=()
 collect_shown_repos() {
   _shown_indices=()
   local i
@@ -1684,18 +1657,70 @@ collect_shown_repos() {
     _shown_indices+=("$i")
   done
   [ "${#_shown_indices[@]}" -gt 0 ] || return 1
-  _path_style="$(resolve_human_path_style "${_shown_indices[@]}")"
+
+  # Compute per-repo display names.
+  # Repos with a unique basename keep it; repos whose basename collides fall back to
+  # relative path (or full path if the relative path also collides).
+  if [ "$PATH_STYLE_EXPLICIT" -eq 1 ]; then
+    for i in "${_shown_indices[@]}"; do
+      _DISP_NAMES[$i]="$(render_path_style "${REPO_ROOTS[$i]}" "$PATH_STYLE")"
+    done
+    return
+  fi
+
+  local j rcl
+  local -a _bn=() _clash=() _rp=()
+
+  for i in "${_shown_indices[@]}"; do
+    _bn[$i]="$(basename_path "${REPO_ROOTS[$i]}")"
+  done
+
+  for i in "${_shown_indices[@]}"; do
+    _clash[$i]=0
+    for j in "${_shown_indices[@]}"; do
+      [ "$i" = "$j" ] && continue
+      if [ "${_bn[$i]}" = "${_bn[$j]}" ]; then
+        _clash[$i]=1
+        break
+      fi
+    done
+  done
+
+  for i in "${_shown_indices[@]}"; do
+    [ "${_clash[$i]}" = "1" ] && _rp[$i]="$(relative_path "${REPO_ROOTS[$i]}")"
+  done
+
+  for i in "${_shown_indices[@]}"; do
+    if [ "${_clash[$i]}" = "0" ]; then
+      _DISP_NAMES[$i]="${_bn[$i]}"
+    else
+      rcl=0
+      for j in "${_shown_indices[@]}"; do
+        [ "$i" = "$j" ] && continue
+        [ "${_bn[$i]}" = "${_bn[$j]}" ] || continue
+        if [ "${_rp[$i]}" = "${_rp[$j]}" ]; then
+          rcl=1
+          break
+        fi
+      done
+      if [ "$rcl" = "1" ]; then
+        _DISP_NAMES[$i]="${REPO_ROOTS[$i]}"
+      else
+        _DISP_NAMES[$i]="${_rp[$i]}"
+      fi
+    fi
+  done
 }
 
 print_default_view() {
   local -a _shown_indices=()
-  local _path_style
+  local -a _DISP_NAMES=()
   collect_shown_repos || return
   local -a cached_paths=()
   local i path_plain type_plain push_plain work_plain
   local max_path=0 max_type=0 max_push=0 max_work=0
   for i in "${_shown_indices[@]}"; do
-    path_plain="$(render_path_style "${REPO_ROOTS[$i]}" "$_path_style")"
+    path_plain="${_DISP_NAMES[$i]}"
     cached_paths[$i]="$path_plain"
     type_plain="[${REPO_TYPES[$i]}]"
     push_plain="${REPO_PUSH_PLAIN[$i]}"
@@ -1815,13 +1840,13 @@ format_work_minimal() {
 
 print_minimal_view() {
   local -a _shown_indices=()
-  local _path_style
+  local -a _DISP_NAMES=()
   collect_shown_repos || return
   local -a cached_paths=() cached_types=() cached_push=() cached_work=()
   local i path_plain type_plain push_plain work_plain
   local max_path=0 max_type=0 max_push=0 max_work=0
   for i in "${_shown_indices[@]}"; do
-    path_plain="$(render_path_style "${REPO_ROOTS[$i]}" "$_path_style")"
+    path_plain="${_DISP_NAMES[$i]}"
     type_plain="$(format_vcs_type_minimal "$i")"
     push_plain="$(format_push_minimal "$i")"
     work_plain="$(format_work_minimal "$i")"
@@ -1990,7 +2015,7 @@ EOF
 
 print_detail_view() {
   local -a _shown_indices=()
-  local _path_style
+  local -a _DISP_NAMES=()
   collect_shown_repos || return
 
   local i global_max_total=0 block_max
@@ -2013,7 +2038,7 @@ print_detail_view() {
   for i in "${_shown_indices[@]}"; do
     [ "$first" -eq 1 ] || printf '\n'
     first=0
-    label="$(render_path_style "${REPO_ROOTS[$i]}" "$_path_style")  [${REPO_TYPES[$i]}]"
+    label="${_DISP_NAMES[$i]}  [${REPO_TYPES[$i]}]"
     print_repo_header_line "$label"
     if [ "$FANCY_MODE" -eq 1 ] && [ "$ENABLE_COLOR" -eq 1 ]; then
       printf '   \033[2mpush:\033[0m  %s\n' "$(colorize_status "${REPO_PUSH_KIND[$i]}" "${REPO_PUSH_PLAIN[$i]}")"

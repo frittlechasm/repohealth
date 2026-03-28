@@ -289,35 +289,44 @@ assert_path_display() {
   write_file "$duplicate_b/file.txt" $'beta\n'
   commit_all "$duplicate_b" "Initial commit" "2024-01-06T00:00:00 +0000"
 
-  # Default table view shows basename
+  # Default table view: unique basenames stay as basename; clashing names fall back to relative
   local table_stdout="$TMP_ROOT/path-table.stdout"
   local table_stderr="$TMP_ROOT/path-table.stderr"
   local table_status="$TMP_ROOT/path-table.status"
   run_cli "$table_stdout" "$table_stderr" "$table_status" --jobs 1 "$workspace"
   [ ! -s "$table_stderr" ] || fail "expected table path-display to avoid stderr"
-  grep -E '^parent/child/nested-repo  \[git\]' "$table_stdout" >/dev/null || fail "expected table output to fall back to relative paths when basenames collide"
-  grep -E '^apps/service +\[git\]' "$table_stdout" >/dev/null || fail "expected table output to disambiguate duplicate basenames with relative paths"
-  grep -E '^tools/service +\[git\]' "$table_stdout" >/dev/null || fail "expected table output to disambiguate duplicate basenames with relative paths"
+  grep -E '^nested-repo +\[git\]' "$table_stdout" >/dev/null || fail "expected non-clashing repo to show basename"
+  if grep -F 'parent/child/nested-repo' "$table_stdout" >/dev/null 2>&1; then
+    fail "expected non-clashing repo to avoid relative path"
+  fi
+  grep -E '^apps/service +\[git\]' "$table_stdout" >/dev/null || fail "expected clashing repos to disambiguate with relative paths"
+  grep -E '^tools/service +\[git\]' "$table_stdout" >/dev/null || fail "expected clashing repos to disambiguate with relative paths"
 
-  # Default minimal view shows basename
+  # Default minimal view: same per-repo logic
   local minimal_stdout="$TMP_ROOT/path-minimal.stdout"
   local minimal_stderr="$TMP_ROOT/path-minimal.stderr"
   local minimal_status="$TMP_ROOT/path-minimal.status"
   run_cli "$minimal_stdout" "$minimal_stderr" "$minimal_status" --jobs 1 --output minimal "$workspace"
   [ ! -s "$minimal_stderr" ] || fail "expected minimal path-display to avoid stderr"
-  grep -E '^parent/child/nested-repo  g ' "$minimal_stdout" >/dev/null || fail "expected minimal output to fall back to relative paths when basenames collide"
-  grep -E '^apps/service +g ' "$minimal_stdout" >/dev/null || fail "expected minimal output to disambiguate duplicate basenames with relative paths"
-  grep -E '^tools/service +g ' "$minimal_stdout" >/dev/null || fail "expected minimal output to disambiguate duplicate basenames with relative paths"
+  grep -E '^nested-repo +g ' "$minimal_stdout" >/dev/null || fail "expected non-clashing repo to show basename"
+  if grep -F 'parent/child/nested-repo' "$minimal_stdout" >/dev/null 2>&1; then
+    fail "expected non-clashing repo to avoid relative path"
+  fi
+  grep -E '^apps/service +g ' "$minimal_stdout" >/dev/null || fail "expected clashing repos to disambiguate with relative paths"
+  grep -E '^tools/service +g ' "$minimal_stdout" >/dev/null || fail "expected clashing repos to disambiguate with relative paths"
 
-  # Default detail view also falls back to relative paths
+  # Default detail view: same per-repo logic
   local detail_stdout="$TMP_ROOT/path-detail.stdout"
   local detail_stderr="$TMP_ROOT/path-detail.stderr"
   local detail_status="$TMP_ROOT/path-detail.status"
   run_cli "$detail_stdout" "$detail_stderr" "$detail_status" --jobs 1 --output detail "$workspace"
   [ ! -s "$detail_stderr" ] || fail "expected detail path-display to avoid stderr"
-  grep -F -- '-- parent/child/nested-repo  [git]' "$detail_stdout" >/dev/null || fail "expected detail output to use relative paths when basenames collide"
-  grep -F -- '-- apps/service  [git]' "$detail_stdout" >/dev/null || fail "expected detail output to disambiguate duplicate basenames with relative paths"
-  grep -F -- '-- tools/service  [git]' "$detail_stdout" >/dev/null || fail "expected detail output to disambiguate duplicate basenames with relative paths"
+  grep -F -- '-- nested-repo  [git]' "$detail_stdout" >/dev/null || fail "expected non-clashing repo to show basename"
+  if grep -F 'parent/child/nested-repo' "$detail_stdout" >/dev/null 2>&1; then
+    fail "expected non-clashing repo to avoid relative path"
+  fi
+  grep -F -- '-- apps/service  [git]' "$detail_stdout" >/dev/null || fail "expected clashing repos to disambiguate with relative paths"
+  grep -F -- '-- tools/service  [git]' "$detail_stdout" >/dev/null || fail "expected clashing repos to disambiguate with relative paths"
 
   # --paths relative shows relative path
   local rel_stdout="$TMP_ROOT/path-relative.stdout"

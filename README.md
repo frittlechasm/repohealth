@@ -9,7 +9,7 @@
     </a>
   </p>
   <img src="./img.png" alt="repohealth CLI output" width="1000" />
-  <p><em>Scan every repo in your workspace at a glance.</em></p>
+  <p><em>Scan every repo in your workspace and get a quick overview of its state.</em></p>
 </div>
 
 ## Install

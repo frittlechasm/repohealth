@@ -1,18 +1,18 @@
 - Keep this file small and concise.
-- Update this file only when there is a new learning or a new rule is introduced.
+- Update this file only when you have a new learning or a new rule is introduced.
 
-## Docs
+# Docs
+- See `README.md` for the full plan, design decisions, and validation checklist.
 
-- Check `README.md` for the full plan, design decisions, and validation checklist.
+# Task Rules
+- When adding or changing a feature, add or update the corresponding tests.
+- Never consider a task complete until `./tests/run` passes with no failures.
 
-## Rules
-
-- The project is a single self-contained Bash script: `repohealth`.
-- There is no build, test, or lint pipeline.
-- Avoid dependencies beyond `bash`, `find`, `awk`, `git`, and optional `jj` and `realpath`.
-- The script must run correctly on both macOS and Linux.
+# Architecture Restraints
+- Single self-contained Bash script (`repohealth`). No build, test, or lint pipeline.
+- No dependencies beyond `bash`, `find`, `awk`, `git`, and optional `jj` and `realpath`.
+- Must run correctly on macOS and Linux.
 - Normal repo output goes to stdout; warnings, per-repo errors, and startup errors go to stderr.
-- Use a two-pass render: collect repo data first, then print output after widths are known.
-- When changing or adding new rendered CLI output, update the snapshot fixtures as needed and run `./tests/run`.
+- Use two-pass rendering: collect repo data first, then print after widths are known.
 - When both `.git` and `.jj` exist at the same root, treat the repo as `jj`.
-- `jj git push --dry-run` may print `Nothing changed.` for both clean repos and draft-only repos when no bookmarks are in the default push revset; only skip draft counting on the unambiguous clean path.
+- With `jj git push --dry-run`, only skip draft counting on the unambiguous clean path.

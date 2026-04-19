@@ -588,6 +588,77 @@ assert_jj_push_state_defers_draft_count() {
   grep -E '^no-remote +j +\? +\- *$' "$minimal_stdout_file" >/dev/null || fail "expected no-remote JJ repo to remain a question state in minimal output"
 }
 
+assert_jj_push_state_reports_missing_description() {
+  local workspace="$TMP_ROOT/jj-no-desc-workspace"
+  local fakebin="$TMP_ROOT/jj-no-desc-bin"
+  local stdout_file="$TMP_ROOT/jj-no-desc.stdout"
+  local stderr_file="$TMP_ROOT/jj-no-desc.stderr"
+  local status_file="$TMP_ROOT/jj-no-desc.status"
+  local minimal_stdout_file="$TMP_ROOT/jj-no-desc-minimal.stdout"
+  local minimal_stderr_file="$TMP_ROOT/jj-no-desc-minimal.stderr"
+  local minimal_status_file="$TMP_ROOT/jj-no-desc-minimal.status"
+  local json_stdout_file="$TMP_ROOT/jj-no-desc-json.stdout"
+  local json_stderr_file="$TMP_ROOT/jj-no-desc-json.stderr"
+  local json_status_file="$TMP_ROOT/jj-no-desc-json.status"
+
+  mkdir -p "$workspace" "$fakebin"
+  mkdir -p "$workspace/no-desc/.jj"
+
+  write_executable "$fakebin/jj" $'#!/usr/bin/env bash\nset -euo pipefail\n\nif [ "${1:-}" != "-R" ]; then\n  printf \'unexpected jj invocation: %s\\n\' "$*" >&2\n  exit 1\nfi\nshift 2\n\ncase "${1:-}" in\n  diff)\n    if [ "${2:-}" != "--name-only" ]; then\n      printf \'unexpected jj diff invocation: %s\\n\' "$*" >&2\n      exit 1\n    fi\n    exit 0\n    ;;\n  git)\n    case "${2:-}" in\n      remote)\n        printf \'origin\\n\'\n        exit 0\n        ;;\n      push)\n        printf \'Error: Won\\x27t push commit fc96ce19d495 since it has no description\\n\' >&2\n        printf \'Error: Won\\x27t push commit a1b2c3d4e5f6 since it has no description\\n\' >&2\n        exit 1\n        ;;\n    esac\n    ;;\n  log)\n    if [[ "$*" == *"--count"* ]]; then\n      printf \'0\\n\'\n      exit 0\n    fi\n    exit 0\n    ;;\n esac\n\nprintf \'unexpected jj invocation: %s\\n\' "$*" >&2\nexit 1\n'
+
+  local status=0
+  set +e
+  env \
+    LC_ALL=C \
+    TZ=UTC \
+    COLUMNS=80 \
+    NO_COLOR=1 \
+    PATH="$fakebin:$PATH" \
+    "$CLI" --jobs 1 "$workspace" >"$stdout_file" 2>"$stderr_file"
+  status=$?
+  set -e
+  printf '%s\n' "$status" >"$status_file"
+
+  [ "$status" -eq 0 ] || fail "jj no-desc push-state run failed with status $status"
+  [ ! -s "$stderr_file" ] || fail "jj no-desc push-state run wrote unexpected stderr"
+  grep -E 'no-desc +\[jj\].*! 2 no-desc' "$stdout_file" >/dev/null || fail "expected no-desc JJ repo to report '! N no-desc' push status"
+
+  set +e
+  env \
+    LC_ALL=C \
+    TZ=UTC \
+    COLUMNS=80 \
+    NO_COLOR=1 \
+    PATH="$fakebin:$PATH" \
+    "$CLI" --jobs 1 --output minimal "$workspace" >"$minimal_stdout_file" 2>"$minimal_stderr_file"
+  status=$?
+  set -e
+  printf '%s\n' "$status" >"$minimal_status_file"
+
+  [ "$status" -eq 0 ] || fail "minimal jj no-desc run failed with status $status"
+  [ ! -s "$minimal_stderr_file" ] || fail "minimal jj no-desc run wrote unexpected stderr"
+  grep -E '^no-desc +j +!2 ND +\- *$' "$minimal_stdout_file" >/dev/null || fail "expected no-desc JJ repo to show '!N ND' in minimal output"
+
+  set +e
+  env \
+    LC_ALL=C \
+    TZ=UTC \
+    COLUMNS=80 \
+    NO_COLOR=1 \
+    PATH="$fakebin:$PATH" \
+    "$CLI" --jobs 1 --output json --detail "$workspace" >"$json_stdout_file" 2>"$json_stderr_file"
+  status=$?
+  set -e
+  printf '%s\n' "$status" >"$json_status_file"
+
+  [ "$status" -eq 0 ] || fail "json jj no-desc run failed with status $status"
+  [ ! -s "$json_stderr_file" ] || fail "json jj no-desc run wrote unexpected stderr"
+  grep -F '"kind": "needs_description"' "$json_stdout_file" >/dev/null || fail "expected JSON output to expose needs_description kind"
+  grep -F '"text": "! 2 no-desc"' "$json_stdout_file" >/dev/null || fail "expected JSON output to expose '! 2 no-desc' text"
+  grep -F '"fc96ce19d495"' "$json_stdout_file" >/dev/null || fail "expected JSON detail to include first undescribed commit id"
+  grep -F '"a1b2c3d4e5f6"' "$json_stdout_file" >/dev/null || fail "expected JSON detail to include second undescribed commit id"
+}
+
 assert_jj_push_detail_preserves_draft_detail() {
   local workspace="$TMP_ROOT/jj-push-detail-workspace"
   local fakebin="$TMP_ROOT/jj-push-detail-bin"
@@ -685,6 +756,7 @@ main() {
   assert_jj_discovery_prefers_jj
   assert_jj_work_state_uses_diff_only
   assert_jj_push_state_defers_draft_count
+  assert_jj_push_state_reports_missing_description
   assert_jj_push_detail_preserves_draft_detail
   assert_repeated_short_exclude_flags "$workspace"
   assert_excluded_linked_worktree_is_silent

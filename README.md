@@ -50,7 +50,7 @@ dotfiles  [jj]   ~ 2 draft     |  - clean
 notes     [git]  - up to date  |  - clean
 ```
 
-Common push statuses: `- up to date` · `↑ N outgoing` · `↓ N behind` · `↕ ahead/behind` · `~ N draft only` · `? no remote`
+Common push statuses: `- up to date` · `↑ N outgoing` · `↓ N behind` · `↕ ahead/behind` · `~ N draft only` · `! N no-desc` · `? no remote`
 
 Common work statuses: `- clean` · `* N modified` · `* N untracked`
 

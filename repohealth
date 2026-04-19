@@ -369,7 +369,7 @@ status_color() {
   outgoing)
     printf '\033[36m'
     ;;
-  changes | draft | behind | diverged)
+  changes | draft | behind | diverged | needs_description)
     printf '\033[33m'
     ;;
   question)
@@ -1393,6 +1393,23 @@ collect_jj_push_state() {
   fi
 
   if [ "$status" -ne 0 ]; then
+    local no_desc_ids no_desc_count no_desc_detail=""
+    no_desc_ids="$(printf '%s\n' "$dry_run_output" | awk '
+      /Won.t push commit .* since it has no description/ {
+        if (match($0, /commit [0-9a-f]+/)) {
+          print substr($0, RSTART + 7, RLENGTH - 7)
+        }
+      }
+    ')"
+    no_desc_ids="$(trim_trailing_newlines "$no_desc_ids")"
+    if [ -n "$no_desc_ids" ]; then
+      no_desc_count="$(count_nonempty_lines "$no_desc_ids")"
+      if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
+        no_desc_detail="$no_desc_ids"
+      fi
+      set_push_status "$idx" "needs_description" "! ${no_desc_count} no-desc" "commits without a description cannot be pushed — run 'jj describe <id>'" "$no_desc_detail" "$no_desc_count"
+      return
+    fi
     warn "JJ push-state check failed for $root: $(first_nonempty_line "$dry_run_output")"
     set_push_status "$idx" "push_failed" "! push check failed" "push check failed: $(first_nonempty_line "$dry_run_output")"
     return
@@ -1802,6 +1819,9 @@ format_push_minimal() {
   draft)
     printf '~%s D' "$primary"
     ;;
+  needs_description)
+    printf '!%s ND' "$primary"
+    ;;
   question)
     printf '?'
     ;;
@@ -2201,7 +2221,7 @@ check_exit_status() {
   fi
   for ((i = 0; i < ${#REPO_ROOTS[@]}; i++)); do
     case "${REPO_PUSH_KIND[$i]}" in
-    outgoing | behind | diverged | question | draft | push_failed | error | unavailable)
+    outgoing | behind | diverged | question | draft | needs_description | push_failed | error | unavailable)
       return 1
       ;;
     esac

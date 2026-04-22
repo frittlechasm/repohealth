@@ -50,11 +50,36 @@ dotfiles  [jj]   ~ 2 draft     |  - clean
 notes     [git]  - up to date  |  - clean
 ```
 
-Common push statuses: `- up to date` · `↑ N outgoing` · `↓ N behind` · `↕ ahead/behind` · `~ N draft only` · `! N no-desc` · `? no remote`
+### Push Statuses
 
-Common work statuses: `- clean` · `* N modified` · `* N untracked`
+| Status | Meaning |
+|--------|---------|
+| `- up to date` | local branch matches the remote |
+| `↑ N outgoing` | local commits are ready to push |
+| `↓ N behind` | remote has commits not present locally |
+| `↕ A ahead, B behind` | local and remote both have unique commits |
+| `~ N draft only` | Jujutsu repo has draft changes but no Git push is needed |
+| `! N no-desc` | Jujutsu changes need descriptions before push |
+| `? no remote` | repo has no usable remote for push checks |
 
-Use `--output detail` for a per-commit stat breakdown, or `--output json` for scripting.
+### Work Statuses
+
+| Status | Meaning |
+|--------|---------|
+| `- clean` | no working-copy changes |
+| `* N modified` | tracked files have local changes |
+| `* N untracked` | untracked files are present |
+| `* M modified, U untracked` | tracked and untracked changes are both present |
+
+### Output Details
+
+| Output | Shows |
+|--------|-------|
+| `table` | one row per repo with push and work status |
+| `minimal` | compact repo names and statuses for quick scans |
+| `detail` | table output plus per-commit stat details |
+| `fancy-detail` | detailed output with richer terminal formatting |
+| `json` | machine-readable repo data for scripts |
 
 ## How it works
 

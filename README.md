@@ -30,7 +30,7 @@ If `directory` is omitted, the current directory is scanned.
 
 | Flag | Description |
 |------|-------------|
-| `-d`, `--dirty` | show only repos that need attention |
+| `-d`, `--dirty` | show only repos with working-copy changes |
 | `-n`, `--depth N` | limit traversal depth |
 | `-c`, `--check` | exit non-zero when any repo needs attention |
 | `-e`, `--exclude PATTERN` | skip repos whose path matches the ERE (repeatable) |

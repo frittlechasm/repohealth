@@ -52,7 +52,7 @@ Usage: $PROGRAM_NAME [options] [directory ...]
 Scan nested Git and Jujutsu repos and report outgoing commits plus working-copy changes.
 
 Options:
-  -d, --dirty           Show only repos with non-clean push or working-copy status
+  -d, --dirty           Show only repos with working-copy changes
   -n, --depth N         Limit traversal depth
   -c, --check           Exit non-zero when any repo needs attention
   -r, --remote NAME     Override the remote used for JJ push checks
@@ -655,6 +655,11 @@ set_draft_detail() {
 is_repo_clean() {
   local idx="$1"
   [ "${REPO_PUSH_KIND[$idx]}" = "clean" ] && [ "${REPO_WORK_KIND[$idx]}" = "clean" ]
+}
+
+is_worktree_dirty() {
+  local idx="$1"
+  [ "${REPO_WORK_KIND[$idx]}" = "changes" ]
 }
 
 join_counts() {
@@ -1646,10 +1651,7 @@ should_show_repo() {
   if [ "$DIRTY_ONLY" -eq 0 ]; then
     return 0
   fi
-  if is_repo_clean "$idx"; then
-    return 1
-  fi
-  return 0
+  is_worktree_dirty "$idx"
 }
 
 # Pad STR to visual width TARGET, storing result in RESULT_VAR.

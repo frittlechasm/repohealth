@@ -4,7 +4,7 @@ set -u
 
 PROGRAM_NAME="${0##*/}"
 
-DIRTY_ONLY=0
+FILTER_MODE="changed"
 MAX_DEPTH=""
 CHECK_MODE=0
 DETAIL_MODE=0
@@ -52,7 +52,7 @@ Usage: $PROGRAM_NAME [options] [directory ...]
 Scan nested Git and Jujutsu repos and report outgoing commits plus working-copy changes.
 
 Options:
-  -d, --dirty           Show only repos with working-copy changes
+  -f, --filter TYPE     Show repos matching TYPE: dirty, uncommitted, unpushed, unpulled, all
   -n, --depth N         Limit traversal depth
   -c, --check           Exit non-zero when any repo needs attention
   -r, --remote NAME     Override the remote used for JJ push checks
@@ -106,6 +106,18 @@ set_path_style() {
     ;;
   *)
     die "--paths must be one of: name, relative, full"
+    ;;
+  esac
+}
+
+set_filter_mode() {
+  local mode="$1"
+  case "$mode" in
+  dirty | uncommitted | uncommiteted | unpushed | unpulled | all)
+    FILTER_MODE="$mode"
+    ;;
+  *)
+    die "--filter must be one of: dirty, uncommitted, unpushed, unpulled, all"
     ;;
   esac
 }
@@ -1648,10 +1660,42 @@ repo_error_count() {
 
 should_show_repo() {
   local idx="$1"
-  if [ "$DIRTY_ONLY" -eq 0 ]; then
+  if [ "$FILTER_MODE" = "all" ]; then
     return 0
   fi
-  is_worktree_dirty "$idx"
+
+  case "$FILTER_MODE" in
+  dirty | uncommitted | uncommiteted)
+    is_worktree_dirty "$idx"
+    ;;
+  unpushed)
+    case "${REPO_PUSH_KIND[$idx]}" in
+    outgoing | diverged | draft | needs_description)
+      return 0
+      ;;
+    esac
+    return 1
+    ;;
+  unpulled)
+    case "${REPO_PUSH_KIND[$idx]}" in
+    behind | diverged)
+      return 0
+      ;;
+    esac
+    return 1
+    ;;
+  changed)
+    if is_worktree_dirty "$idx"; then
+      return 0
+    fi
+    case "${REPO_PUSH_KIND[$idx]}" in
+    outgoing | behind | diverged | draft | needs_description)
+      return 0
+      ;;
+    esac
+    return 1
+    ;;
+  esac
 }
 
 # Pad STR to visual width TARGET, storing result in RESULT_VAR.
@@ -2239,8 +2283,13 @@ check_exit_status() {
 parse_args() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
+    -f | --filter)
+      [ "$#" -ge 2 ] || die "--filter requires a value"
+      set_filter_mode "$2"
+      shift
+      ;;
     -d | --dirty)
-      DIRTY_ONLY=1
+      die "--dirty was removed; use --filter dirty"
       ;;
     -n | --depth)
       [ "$#" -ge 2 ] || die "--depth requires a value"

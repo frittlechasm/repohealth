@@ -30,7 +30,7 @@ If `directory` is omitted, the current directory is scanned.
 
 | Flag | Description |
 |------|-------------|
-| `-d`, `--dirty` | show only repos with working-copy changes |
+| `-f`, `--filter TYPE` | show repos matching `dirty`, `uncommitted`, `unpushed`, `unpulled`, or `all` |
 | `-n`, `--depth N` | limit traversal depth |
 | `-c`, `--check` | exit non-zero when any repo needs attention |
 | `-e`, `--exclude PATTERN` | skip repos whose path matches the ERE (repeatable) |
@@ -70,6 +70,18 @@ notes     [git]  - up to date  |  - clean
 | `* N modified` | tracked files have local changes |
 | `* N untracked` | untracked files are present |
 | `* M modified, U untracked` | tracked and untracked changes are both present |
+
+### Filters
+
+Filters limit which repos appear in the list. Without `--filter`, repohealth shows repos with uncommitted, unpushed, or unpulled changes.
+
+| Filter | Shows |
+|--------|-------|
+| `dirty` | repos with working-copy changes |
+| `uncommitted` | same as `dirty` |
+| `unpushed` | repos with outgoing commits, draft-only JJ changes, or no-description JJ commits |
+| `unpulled` | repos behind the remote |
+| `all` | every scanned repo, including clean repos |
 
 ### Output Details
 

@@ -1,6 +1,4 @@
-ahead-dirty     g  ↑1 O  *1 M +1 U
-clean-upstream  g  -       -        
-no-remote       g  ?       -        
+ahead-dirty  g  ↑1 O  *1 M +1 U
 
 ---------------------------------
 scanned: 3  outgoing: 1  dirty: 1

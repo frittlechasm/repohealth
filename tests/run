@@ -168,6 +168,105 @@ assert_jobs_consistent() {
   compare_file "jobs status" "$seq_status" "$par_status"
 }
 
+assert_filter_modes() {
+  local workspace="$TMP_ROOT/filter-workspace"
+  local remotes="$TMP_ROOT/filter-remotes"
+  local stdout_file="$TMP_ROOT/filter.stdout"
+  local stderr_file="$TMP_ROOT/filter.stderr"
+  local status_file="$TMP_ROOT/filter.status"
+  local clone="$TMP_ROOT/filter-clone"
+  mkdir -p "$workspace" "$remotes"
+
+  init_bare_repo "$remotes/outgoing-clean.git"
+  init_git_repo "$workspace/outgoing-clean"
+  write_file "$workspace/outgoing-clean/file.txt" $'base\n'
+  commit_all "$workspace/outgoing-clean" "Initial commit" "2024-02-01T00:00:00 +0000"
+  git -C "$workspace/outgoing-clean" remote add origin "$remotes/outgoing-clean.git"
+  git -C "$workspace/outgoing-clean" push -u origin main >/dev/null 2>&1
+  write_file "$workspace/outgoing-clean/file.txt" $'base\noutgoing\n'
+  commit_all "$workspace/outgoing-clean" "Outgoing commit" "2024-02-02T00:00:00 +0000"
+
+  init_bare_repo "$remotes/behind-clean.git"
+  init_git_repo "$workspace/behind-clean"
+  write_file "$workspace/behind-clean/file.txt" $'base\n'
+  commit_all "$workspace/behind-clean" "Initial commit" "2024-02-03T00:00:00 +0000"
+  git -C "$workspace/behind-clean" remote add origin "$remotes/behind-clean.git"
+  git -C "$workspace/behind-clean" push -u origin main >/dev/null 2>&1
+  git clone "$remotes/behind-clean.git" "$clone" >/dev/null 2>&1
+  git -C "$clone" config user.name "Repohealth Tests"
+  git -C "$clone" config user.email "repohealth-tests@example.com"
+  write_file "$clone/file.txt" $'base\nremote\n'
+  commit_all "$clone" "Remote commit" "2024-02-04T00:00:00 +0000"
+  git -C "$clone" push origin main >/dev/null 2>&1
+  git -C "$workspace/behind-clean" fetch origin >/dev/null 2>&1
+
+  init_git_repo "$workspace/dirty-only"
+  write_file "$workspace/dirty-only/file.txt" $'dirty\n'
+  commit_all "$workspace/dirty-only" "Initial commit" "2024-02-05T00:00:00 +0000"
+  write_file "$workspace/dirty-only/file.txt" $'dirty\nworktree\n'
+
+  init_bare_repo "$remotes/clean-only.git"
+  init_git_repo "$workspace/clean-only"
+  write_file "$workspace/clean-only/file.txt" $'clean\n'
+  commit_all "$workspace/clean-only" "Initial commit" "2024-02-06T00:00:00 +0000"
+  git -C "$workspace/clean-only" remote add origin "$remotes/clean-only.git"
+  git -C "$workspace/clean-only" push -u origin main >/dev/null 2>&1
+
+  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 "$workspace"
+  [ "$(cat "$status_file")" -eq 0 ] || fail "expected default filter to succeed"
+  grep -F 'outgoing-clean' "$stdout_file" >/dev/null || fail "expected default filter to show outgoing repos"
+  grep -F 'behind-clean' "$stdout_file" >/dev/null || fail "expected default filter to show behind repos"
+  grep -F 'dirty-only' "$stdout_file" >/dev/null || fail "expected default filter to show dirty repos"
+  if grep -F 'clean-only' "$stdout_file" >/dev/null; then
+    fail "expected default filter to hide clean repos"
+  fi
+
+  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --filter unpushed "$workspace"
+  [ "$(cat "$status_file")" -eq 0 ] || fail "expected --filter unpushed to succeed"
+  [ ! -s "$stderr_file" ] || fail "expected --filter unpushed to avoid stderr"
+  grep -E '^outgoing-clean +\[git\] +↑ 1 outgoing +\| +- clean *$' "$stdout_file" >/dev/null ||
+    fail "expected --filter unpushed to show clean outgoing repos"
+  if grep -F 'behind-clean' "$stdout_file" >/dev/null || grep -F 'dirty-only' "$stdout_file" >/dev/null || grep -F 'clean-only' "$stdout_file" >/dev/null; then
+    fail "expected --filter unpushed to hide behind-only, dirty-only, and clean repos"
+  fi
+
+  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --filter unpulled "$workspace"
+  [ "$(cat "$status_file")" -eq 0 ] || fail "expected --filter unpulled to succeed"
+  grep -E '^behind-clean +\[git\] +↓ 1 behind +\| +- clean *$' "$stdout_file" >/dev/null ||
+    fail "expected --filter unpulled to show clean behind repos"
+  if grep -F 'outgoing-clean' "$stdout_file" >/dev/null || grep -F 'dirty-only' "$stdout_file" >/dev/null || grep -F 'clean-only' "$stdout_file" >/dev/null; then
+    fail "expected --filter unpulled to hide outgoing-only, dirty-only, and clean repos"
+  fi
+
+  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --filter dirty "$workspace"
+  [ "$(cat "$status_file")" -eq 0 ] || fail "expected --filter dirty to succeed"
+  grep -E '^dirty-only +\[git\].*\| +\* 1 modified *$' "$stdout_file" >/dev/null ||
+    fail "expected --filter dirty to show working-copy changes"
+  if grep -F 'outgoing-clean' "$stdout_file" >/dev/null || grep -F 'behind-clean' "$stdout_file" >/dev/null || grep -F 'clean-only' "$stdout_file" >/dev/null; then
+    fail "expected --filter dirty to hide clean push-state changes and clean repos"
+  fi
+
+  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --filter uncommitted "$workspace"
+  [ "$(cat "$status_file")" -eq 0 ] || fail "expected --filter uncommitted to succeed"
+  grep -F 'dirty-only' "$stdout_file" >/dev/null || fail "expected --filter uncommitted to match dirty repos"
+
+  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --filter uncommiteted "$workspace"
+  [ "$(cat "$status_file")" -eq 0 ] || fail "expected typo-compatible --filter uncommiteted to succeed"
+  grep -F 'dirty-only' "$stdout_file" >/dev/null || fail "expected --filter uncommiteted to match dirty repos"
+
+  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --filter all "$workspace"
+  [ "$(cat "$status_file")" -eq 0 ] || fail "expected --filter all to succeed"
+  grep -F 'outgoing-clean' "$stdout_file" >/dev/null || fail "expected --filter all to show outgoing repos"
+  grep -F 'behind-clean' "$stdout_file" >/dev/null || fail "expected --filter all to show behind repos"
+  grep -F 'dirty-only' "$stdout_file" >/dev/null || fail "expected --filter all to show dirty repos"
+  grep -F 'clean-only' "$stdout_file" >/dev/null || fail "expected --filter all to show clean repos"
+
+  run_cli "$stdout_file" "$stderr_file" "$status_file" --dirty "$workspace"
+  [ "$(cat "$status_file")" -ne 0 ] || fail "expected removed --dirty flag to fail"
+  grep -F -- '--dirty was removed; use --filter dirty' "$stderr_file" >/dev/null ||
+    fail "expected removed --dirty flag to explain replacement"
+}
+
 assert_default_jobs_floor() {
   local workspace="$TMP_ROOT/default-jobs-workspace"
   local fakebin="$TMP_ROOT/default-jobs-bin"
@@ -242,7 +341,7 @@ assert_detail_alias_matches_output_precedence() {
   [ ! -s "$alias_table_stderr" ] || fail "expected --detail --output table to avoid stderr"
   [ ! -s "$explicit_table_stderr" ] || fail "expected --output detail --output table to avoid stderr"
   cmp -s "$alias_table_stdout" "$explicit_table_stdout" || fail "expected table output to match for alias and explicit detail forms"
-  grep -F 'ahead-dirty     [git]  ↑ 1 outgoing' "$alias_table_stdout" >/dev/null ||
+  grep -E '^ahead-dirty +\[git\] +↑ 1 outgoing' "$alias_table_stdout" >/dev/null ||
     fail "expected later --output table to win over --detail"
   if grep -F '   ↑ Outgoing' "$alias_table_stdout" >/dev/null 2>&1; then
     fail "expected table output to avoid detail sections"
@@ -293,7 +392,7 @@ assert_path_display() {
   local table_stdout="$TMP_ROOT/path-table.stdout"
   local table_stderr="$TMP_ROOT/path-table.stderr"
   local table_status="$TMP_ROOT/path-table.status"
-  run_cli "$table_stdout" "$table_stderr" "$table_status" --jobs 1 "$workspace"
+  run_cli "$table_stdout" "$table_stderr" "$table_status" --jobs 1 --filter all "$workspace"
   [ ! -s "$table_stderr" ] || fail "expected table path-display to avoid stderr"
   grep -E '^nested-repo +\[git\]' "$table_stdout" >/dev/null || fail "expected non-clashing repo to show basename"
   if grep -F 'parent/child/nested-repo' "$table_stdout" >/dev/null 2>&1; then
@@ -306,7 +405,7 @@ assert_path_display() {
   local minimal_stdout="$TMP_ROOT/path-minimal.stdout"
   local minimal_stderr="$TMP_ROOT/path-minimal.stderr"
   local minimal_status="$TMP_ROOT/path-minimal.status"
-  run_cli "$minimal_stdout" "$minimal_stderr" "$minimal_status" --jobs 1 --output minimal "$workspace"
+  run_cli "$minimal_stdout" "$minimal_stderr" "$minimal_status" --jobs 1 --filter all --output minimal "$workspace"
   [ ! -s "$minimal_stderr" ] || fail "expected minimal path-display to avoid stderr"
   grep -E '^nested-repo +g ' "$minimal_stdout" >/dev/null || fail "expected non-clashing repo to show basename"
   if grep -F 'parent/child/nested-repo' "$minimal_stdout" >/dev/null 2>&1; then
@@ -319,7 +418,7 @@ assert_path_display() {
   local detail_stdout="$TMP_ROOT/path-detail.stdout"
   local detail_stderr="$TMP_ROOT/path-detail.stderr"
   local detail_status="$TMP_ROOT/path-detail.status"
-  run_cli "$detail_stdout" "$detail_stderr" "$detail_status" --jobs 1 --output detail "$workspace"
+  run_cli "$detail_stdout" "$detail_stderr" "$detail_status" --jobs 1 --filter all --output detail "$workspace"
   [ ! -s "$detail_stderr" ] || fail "expected detail path-display to avoid stderr"
   grep -F -- '-- nested-repo  [git]' "$detail_stdout" >/dev/null || fail "expected non-clashing repo to show basename"
   if grep -F 'parent/child/nested-repo' "$detail_stdout" >/dev/null 2>&1; then
@@ -332,7 +431,7 @@ assert_path_display() {
   local rel_stdout="$TMP_ROOT/path-relative.stdout"
   local rel_stderr="$TMP_ROOT/path-relative.stderr"
   local rel_status="$TMP_ROOT/path-relative.status"
-  run_cli "$rel_stdout" "$rel_stderr" "$rel_status" --jobs 1 --paths relative "$workspace"
+  run_cli "$rel_stdout" "$rel_stderr" "$rel_status" --jobs 1 --filter all --paths relative "$workspace"
   [ ! -s "$rel_stderr" ] || fail "expected --paths relative to avoid stderr"
   grep -F 'parent/child/nested-repo' "$rel_stdout" >/dev/null || fail "expected --paths relative to show relative path"
 
@@ -342,7 +441,7 @@ assert_path_display() {
   local full_status="$TMP_ROOT/path-full.status"
   local nested_canon
   nested_canon="$(cd "$nested_repo" && pwd -P)"
-  run_cli "$full_stdout" "$full_stderr" "$full_status" --jobs 1 --paths full "$workspace"
+  run_cli "$full_stdout" "$full_stderr" "$full_status" --jobs 1 --filter all --paths full "$workspace"
   [ ! -s "$full_stderr" ] || fail "expected --paths full to avoid stderr"
   grep -F "$nested_canon" "$full_stdout" >/dev/null || fail "expected --paths full to show absolute path"
 
@@ -350,7 +449,7 @@ assert_path_display() {
   local excl_stdout="$TMP_ROOT/path-exclude.stdout"
   local excl_stderr="$TMP_ROOT/path-exclude.stderr"
   local excl_status="$TMP_ROOT/path-exclude.status"
-  run_cli "$excl_stdout" "$excl_stderr" "$excl_status" --jobs 1 --exclude 'parent/child' "$workspace"
+  run_cli "$excl_stdout" "$excl_stderr" "$excl_status" --jobs 1 --filter all --exclude 'parent/child' "$workspace"
   [ ! -s "$excl_stderr" ] || fail "expected --exclude relative-path run to avoid stderr"
   if grep -F 'nested-repo' "$excl_stdout" >/dev/null 2>&1; then
     fail "expected --exclude to match against relative path and exclude nested-repo"
@@ -381,7 +480,7 @@ assert_json_paths_stable() {
   write_file "$nested_repo/file.txt" $'hello\n'
   commit_all "$nested_repo" "Initial commit" "2024-01-06T00:00:00 +0000"
 
-  run_cli "$json_stdout" "$json_stderr" "$json_status" --jobs 1 --output json "$workspace"
+  run_cli "$json_stdout" "$json_stderr" "$json_status" --jobs 1 --filter all --output json "$workspace"
   [ ! -s "$json_stderr" ] || fail "expected default json path run to avoid stderr"
   grep -F '"path": "apps/service"' "$json_stdout" >/dev/null ||
     fail "expected default json output to use relative paths under a single scan root"
@@ -398,7 +497,7 @@ assert_json_paths_stable() {
 
   repo_a_canon="$(cd "$repo_a" && pwd -P)"
   repo_b_canon="$(cd "$repo_b" && pwd -P)"
-  run_cli "$multi_stdout" "$multi_stderr" "$multi_status" --jobs 1 --output json "$dir_a" "$dir_b"
+  run_cli "$multi_stdout" "$multi_stderr" "$multi_status" --jobs 1 --filter all --output json "$dir_a" "$dir_b"
   [ ! -s "$multi_stderr" ] || fail "expected multi-root json path run to avoid stderr"
   grep -F "\"path\": \"$repo_a_canon\"" "$multi_stdout" >/dev/null ||
     fail "expected multi-root json output to use full paths for uniqueness"
@@ -412,7 +511,7 @@ assert_json_paths_stable() {
   write_file "$root_dir_b/file.txt" $'root-b\n'
   commit_all "$root_dir_b" "Initial commit" "2024-01-06T00:00:00 +0000"
 
-  run_cli "$root_rel_stdout" "$root_rel_stderr" "$root_rel_status" --jobs 1 --paths relative "$root_dir_a" "$root_dir_b"
+  run_cli "$root_rel_stdout" "$root_rel_stderr" "$root_rel_status" --jobs 1 --filter all --paths relative "$root_dir_a" "$root_dir_b"
   [ ! -s "$root_rel_stderr" ] || fail "expected multi-root --paths relative run to avoid stderr"
   grep -E '^json-root-a +\[git\]' "$root_rel_stdout" >/dev/null ||
     fail "expected exact-root repo under --paths relative to use the scan-root basename in multi-root output"
@@ -450,7 +549,7 @@ assert_jj_discovery_prefers_jj() {
     NO_COLOR=1 \
     PATH="$fakebin:$PATH" \
     REPOHEALTH_TEST_JJ_CALLS_FILE="$calls_file" \
-    "$CLI" --jobs 1 "$workspace" >"$stdout_file" 2>"$stderr_file"
+    "$CLI" --jobs 1 --filter all "$workspace" >"$stdout_file" 2>"$stderr_file"
   status=$?
   set -e
   printf '%s\n' "$status" >"$status_file"
@@ -492,7 +591,7 @@ assert_jj_work_state_uses_diff_only() {
     PATH="$fakebin:$PATH" \
     REPOHEALTH_TEST_JJ_CALLS_FILE="$jj_calls_file" \
     REPOHEALTH_TEST_GIT_CALLS_FILE="$git_calls_file" \
-    "$CLI" --jobs 1 "$workspace" >"$stdout_file" 2>"$stderr_file"
+    "$CLI" --jobs 1 --filter all "$workspace" >"$stdout_file" 2>"$stderr_file"
   status=$?
   set -e
   printf '%s\n' "$status" >"$status_file"
@@ -544,7 +643,7 @@ assert_jj_push_state_defers_draft_count() {
     NO_COLOR=1 \
     PATH="$fakebin:$PATH" \
     REPOHEALTH_TEST_JJ_CALLS_FILE="$calls_file" \
-    "$CLI" --jobs 1 "$workspace" >"$stdout_file" 2>"$stderr_file"
+    "$CLI" --jobs 1 --filter all "$workspace" >"$stdout_file" 2>"$stderr_file"
   status=$?
   set -e
   printf '%s\n' "$status" >"$status_file"
@@ -575,7 +674,7 @@ assert_jj_push_state_defers_draft_count() {
     NO_COLOR=1 \
     PATH="$fakebin:$PATH" \
     REPOHEALTH_TEST_JJ_CALLS_FILE="$calls_file" \
-    "$CLI" --jobs 1 --output minimal "$workspace" >"$minimal_stdout_file" 2>"$minimal_stderr_file"
+    "$CLI" --jobs 1 --filter all --output minimal "$workspace" >"$minimal_stdout_file" 2>"$minimal_stderr_file"
   status=$?
   set -e
   printf '%s\n' "$status" >"$minimal_status_file"
@@ -740,8 +839,8 @@ main() {
   assert_snapshot "empty" "$TMP_ROOT/empty" --jobs 1
   assert_snapshot "default" "$workspace" --jobs 1
   assert_snapshot "minimal" "$workspace" --jobs 1 --output minimal
-  assert_snapshot "dirty" "$workspace" --jobs 1 --dirty
-  assert_snapshot "minimal-dirty" "$workspace" --jobs 1 --output minimal --dirty
+  assert_snapshot "dirty" "$workspace" --jobs 1 --filter dirty
+  assert_snapshot "minimal-dirty" "$workspace" --jobs 1 --output minimal --filter dirty
   assert_snapshot "exclude-single" "$workspace" --jobs 1 --exclude 'no-remote'
   assert_snapshot "exclude-multi" "$workspace" --jobs 1 --exclude 'no-remote' --exclude 'clean'
   assert_snapshot "detail" "$workspace/ahead-dirty" --jobs 1 --output detail
@@ -749,6 +848,7 @@ main() {
   assert_snapshot "format-json" "$workspace" --jobs 1 --output json
   assert_snapshot "format-json-detail" "$workspace/ahead-dirty" --jobs 1 --output json --detail
   assert_jobs_consistent "$workspace"
+  assert_filter_modes
   assert_default_jobs_floor
   assert_detail_alias_matches_output_precedence "$workspace"
   assert_path_display

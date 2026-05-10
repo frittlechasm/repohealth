@@ -1288,6 +1288,34 @@ count_jj_outgoing_commits() {
   first_nonempty_line "$output"
 }
 
+build_jj_bookmark_breakdown() {
+  local root="$1"
+  local remote="$2"
+  local tip_output bookmark_names name count result=""
+
+  tip_output="$(jj -R "$root" log -r "bookmarks() ~ remote_bookmarks(remote=$remote)" \
+    --no-graph -T 'bookmarks.join("\n") ++ "\n"' 2>/dev/null || true)"
+  bookmark_names="$(printf '%s\n' "$tip_output" | sed 's/\*$//' | awk 'NF' | sort -u)"
+  if [ -z "$bookmark_names" ]; then
+    return
+  fi
+
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    count="$(jj -R "$root" log -r "::\"$name\" ~ ::remote_bookmarks(remote=$remote)" \
+      --count 2>/dev/null || echo 0)"
+    if [ -n "$count" ] && is_integer "$count" && [ "$count" -gt 0 ]; then
+      if [ -n "$result" ]; then
+        result="$result, $name: $count"
+      else
+        result="$name: $count"
+      fi
+    fi
+  done <<< "$bookmark_names"
+
+  printf '%s' "$result"
+}
+
 collect_jj_work_state() {
   local idx="$1"
   local root="$2"
@@ -1479,11 +1507,16 @@ collect_jj_push_state() {
       fi
       draft_loaded=1
     fi
-    if [ "$draft_count" -gt 0 ]; then
-      set_push_status "$idx" "outgoing" "↑ ${outgoing_count} outgoing (+${draft_count} draft)" "" "$detail" "$outgoing_count" "$draft_count"
-    else
-      set_push_status "$idx" "outgoing" "↑ ${outgoing_count} outgoing" "" "$detail" "$outgoing_count"
+    local bk_breakdown
+    bk_breakdown="$(build_jj_bookmark_breakdown "$root" "$selected_remote")"
+    local push_label="↑ ${outgoing_count} outgoing"
+    if [ -n "$bk_breakdown" ]; then
+      push_label="$push_label ($bk_breakdown)"
     fi
+    if [ "$draft_count" -gt 0 ]; then
+      push_label="$push_label (+${draft_count} draft)"
+    fi
+    set_push_status "$idx" "outgoing" "$push_label" "" "$detail" "$outgoing_count" "$draft_count"
     return
   fi
 
@@ -1494,6 +1527,28 @@ collect_jj_push_state() {
 
   if contains_line "$dry_run_output" "Nothing changed." &&
     ! contains_line "$dry_run_output" "No bookmarks found in the default push revset"; then
+    local fallback_remote outgoing_revset fallback_count
+    if [ -n "$REMOTE_OVERRIDE" ]; then
+      fallback_remote="$REMOTE_OVERRIDE"
+    else
+      fallback_remote="$(printf '%s\n' "$remote_output" | awk 'NR==1 { print $1 }')"
+    fi
+    outgoing_revset="$(jj_outgoing_revset "$fallback_remote")"
+    fallback_count="$(count_jj_outgoing_commits "$root" "$outgoing_revset")"
+    if [ -n "$fallback_count" ] && is_integer "$fallback_count" && [ "$fallback_count" -gt 0 ]; then
+      local fallback_detail=""
+      if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
+        fallback_detail="$(build_jj_commit_detail "$root" "$outgoing_revset")"
+      fi
+      local fallback_bk_breakdown
+      fallback_bk_breakdown="$(build_jj_bookmark_breakdown "$root" "$fallback_remote")"
+      local fallback_label="↑ ${fallback_count} outgoing"
+      if [ -n "$fallback_bk_breakdown" ]; then
+        fallback_label="$fallback_label ($fallback_bk_breakdown)"
+      fi
+      set_push_status "$idx" "outgoing" "$fallback_label" "bookmarks ahead of remote but not in default push revset" "$fallback_detail" "$fallback_count"
+      return
+    fi
     set_push_status "$idx" "clean" "- up to date"
     return
   fi

@@ -823,6 +823,91 @@ assert_excluded_linked_worktree_is_silent() {
   grep -F 'scanned: 0' "$stdout_file" >/dev/null || fail "expected excluded linked worktree run to scan zero repos"
 }
 
+assert_table_respects_columns() {
+  local workspace="$TMP_ROOT/table-width-workspace"
+  local repo="$workspace/really-long-repository-name-that-would-wrap-in-narrow-captures"
+  local stdout_file="$TMP_ROOT/table-width.stdout"
+  local stderr_file="$TMP_ROOT/table-width.stderr"
+  local status_file="$TMP_ROOT/table-width.status"
+
+  init_git_repo "$repo"
+  write_file "$repo/file.txt" $'hello\n'
+  commit_all "$repo" "Initial commit" "2024-01-06T00:00:00 +0000"
+
+  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --filter all "$workspace"
+
+  [ "$(cat "$status_file")" -eq 0 ] || fail "expected table-width run to succeed"
+  [ ! -s "$stderr_file" ] || fail "expected table-width run to avoid stderr"
+  grep -F '...' "$stdout_file" >/dev/null || fail "expected table-width output to truncate long repo names"
+  awk 'length($0) > 80 { exit 1 }' "$stdout_file" ||
+    fail "expected table-width output to stay within COLUMNS=80"
+}
+
+assert_table_status_columns_align() {
+  local workspace="$1"
+  local stdout_file="$TMP_ROOT/table-align.stdout"
+  local stderr_file="$TMP_ROOT/table-align.stderr"
+  local status_file="$TMP_ROOT/table-align.status"
+
+  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --filter all "$workspace"
+
+  [ "$(cat "$status_file")" -eq 0 ] || fail "expected table-align run to succeed"
+  [ ! -s "$stderr_file" ] || fail "expected table-align run to avoid stderr"
+  awk '
+    {
+      line = $0
+      gsub(/↑|↓|↕/, "x", line)
+    }
+    index(line, "|") {
+      col = index(line, "|")
+      if (!expected) {
+        expected = col
+      } else if (col != expected) {
+        exit 1
+      }
+    }
+  ' "$stdout_file" || fail "expected table separator columns to align under LC_ALL=C"
+}
+
+assert_status_colors_are_fixed_rgb() {
+  local workspace="$TMP_ROOT/color-workspace"
+  local repo="$workspace/color-clean"
+  local color_stdout="$TMP_ROOT/color.stdout"
+  local color_stderr="$TMP_ROOT/color.stderr"
+  local color_status="$TMP_ROOT/color.status"
+  local plain_stdout="$TMP_ROOT/color-plain.stdout"
+  local plain_stderr="$TMP_ROOT/color-plain.stderr"
+  local plain_status="$TMP_ROOT/color-plain.status"
+  local green=$'\033[38;2;126;231;135m'
+
+  init_git_repo "$repo"
+  write_file "$repo/file.txt" $'hello\n'
+  commit_all "$repo" "Initial commit" "2024-01-07T00:00:00 +0000"
+
+  set +e
+  env -u NO_COLOR LC_ALL=C TZ=UTC COLUMNS=80 REPOHEALTH_FORCE_COLOR=1 "$CLI" --jobs 1 --filter all "$workspace" >"$color_stdout" 2>"$color_stderr"
+  status=$?
+  set -e
+  printf '%s\n' "$status" >"$color_status"
+
+  [ "$(cat "$color_status")" -eq 0 ] || fail "expected forced-color run to succeed"
+  [ ! -s "$color_stderr" ] || fail "expected forced-color run to avoid stderr"
+  grep -F "${green}- clean" "$color_stdout" >/dev/null ||
+    fail "expected clean status to use fixed RGB green"
+
+  set +e
+  env -u NO_COLOR LC_ALL=C TZ=UTC COLUMNS=80 REPOHEALTH_FORCE_COLOR=1 "$CLI" --jobs 1 --filter all --no-color "$workspace" >"$plain_stdout" 2>"$plain_stderr"
+  status=$?
+  set -e
+  printf '%s\n' "$status" >"$plain_status"
+
+  [ "$(cat "$plain_status")" -eq 0 ] || fail "expected --no-color forced-color run to succeed"
+  [ ! -s "$plain_stderr" ] || fail "expected --no-color forced-color run to avoid stderr"
+  if grep -F "$green" "$plain_stdout" >/dev/null 2>&1; then
+    fail "expected --no-color to suppress fixed RGB colors"
+  fi
+}
+
 main() {
   trap cleanup EXIT
 
@@ -860,6 +945,9 @@ main() {
   assert_jj_push_detail_preserves_draft_detail
   assert_repeated_short_exclude_flags "$workspace"
   assert_excluded_linked_worktree_is_silent
+  assert_table_respects_columns
+  assert_table_status_columns_align "$workspace"
+  assert_status_colors_are_fixed_rgb
 
   # multi-directory: scan two separate roots
   local dir_a="$TMP_ROOT/multi-a"

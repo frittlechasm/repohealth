@@ -14,11 +14,33 @@
 
 ## Install
 
+macOS and Linux:
+
 ```bash
-chmod +x ./repohealth
+curl -fsSL https://raw.githubusercontent.com/frittlechasm/repohealth/main/install.sh | sh
 ```
 
-Requires `bash`, `find`, `awk`, `git`. Optionally `jj` for Jujutsu repos, `fd` for faster discovery.
+Windows PowerShell:
+
+```powershell
+iwr https://raw.githubusercontent.com/frittlechasm/repohealth/main/install.ps1 -UseB | iex
+```
+
+By default, macOS and Linux install to `~/.local/bin/repohealth` and update your shell profile when that directory is not already on `PATH`. Windows installs to `%LOCALAPPDATA%\Programs\repohealth`, creates a `repohealth.cmd` launcher, and adds that directory to the current session and user `PATH`. Open a new terminal after installation if your shell does not pick up `PATH` changes immediately.
+
+To choose a directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/frittlechasm/repohealth/main/install.sh | sh -s -- --dir "$HOME/bin"
+```
+
+```powershell
+$env:REPOHEALTH_INSTALL_DIR="$HOME\bin"; iwr https://raw.githubusercontent.com/frittlechasm/repohealth/main/install.ps1 -UseB | iex
+```
+
+For a local checkout, `chmod +x ./repohealth` is enough.
+
+Requires `bash`, `find`, `awk`, `git`. On Windows, install Git for Windows or another Bash provider first. Optionally `jj` for Jujutsu repos, `fd` for faster discovery.
 
 ## Usage
 

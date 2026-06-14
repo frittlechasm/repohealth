@@ -6,6 +6,8 @@ ROOT_DIR="$(
   cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd -P
 )"
 CLI="$ROOT_DIR/repohealth"
+INSTALL_SH="$ROOT_DIR/install.sh"
+INSTALL_PS1="$ROOT_DIR/install.ps1"
 FIXTURES_DIR="$ROOT_DIR/tests/fixtures"
 TMP_ROOT=""
 UPDATE_SNAPSHOTS="${UPDATE_SNAPSHOTS:-0}"
@@ -908,10 +910,75 @@ assert_status_colors_are_fixed_rgb() {
   fi
 }
 
+assert_posix_installer() {
+  local install_root="$TMP_ROOT/install-root"
+  local fakebin="$TMP_ROOT/install-fakebin"
+  local source="$TMP_ROOT/install-source/repohealth"
+  local curl_calls="$TMP_ROOT/install-curl.calls"
+  local stdout_file="$TMP_ROOT/install.stdout"
+  local stderr_file="$TMP_ROOT/install.stderr"
+  local status_file="$TMP_ROOT/install.status"
+  local home_dir="$TMP_ROOT/install-home"
+  local profile_file="$home_dir/.zshrc"
+  local target="$install_root/bin/repohealth-dev"
+
+  mkdir -p "$fakebin" "$(dirname "$source")" "$home_dir"
+  cp "$CLI" "$source"
+  write_file "$curl_calls" ''
+
+  write_executable "$fakebin/curl" $'#!/usr/bin/env bash\nset -euo pipefail\nout=""\nurl=""\nwhile [ "$#" -gt 0 ]; do\n  case "$1" in\n    -o)\n      out="$2"\n      shift 2\n      ;;\n    -*)\n      shift\n      ;;\n    *)\n      url="$1"\n      shift\n      ;;\n  esac\ndone\n[ -n "$out" ] || { printf \'missing curl output path\\n\' >&2; exit 2; }\n[ -n "$url" ] || { printf \'missing curl URL\\n\' >&2; exit 2; }\nprintf \'%s\\n\' "$url" >>"${REPOHEALTH_TEST_CURL_CALLS:?}"\ncp "${REPOHEALTH_TEST_SOURCE:?}" "$out"\n'
+
+  local status=0
+  set +e
+  env \
+    LC_ALL=C \
+    PATH="$fakebin:$PATH" \
+    HOME="$home_dir" \
+    SHELL="/bin/zsh" \
+    REPOHEALTH_TEST_SOURCE="$source" \
+    REPOHEALTH_TEST_CURL_CALLS="$curl_calls" \
+    REPOHEALTH_BASE_URL="https://example.invalid/repohealth/test-ref" \
+    "$INSTALL_SH" --dir "$install_root/bin" --bin repohealth-dev >"$stdout_file" 2>"$stderr_file"
+  status=$?
+  set -e
+  printf '%s\n' "$status" >"$status_file"
+
+  [ "$status" -eq 0 ] || fail "POSIX installer failed with status $status"
+  [ -x "$target" ] || fail "expected POSIX installer to create executable target"
+  grep -F 'https://example.invalid/repohealth/test-ref/repohealth' "$curl_calls" >/dev/null ||
+    fail "expected POSIX installer to download repohealth from configured base URL"
+  grep -F "Installed repohealth to $target" "$stderr_file" >/dev/null ||
+    fail "expected POSIX installer to report installed path"
+  grep -F "Updated your shell profile so repohealth-dev is available from new terminals." "$stderr_file" >/dev/null ||
+    fail "expected POSIX installer to report automatic PATH setup"
+  grep -F "export PATH=\"$install_root/bin:\$PATH\"" "$profile_file" >/dev/null ||
+    fail "expected POSIX installer to add install dir to shell profile"
+
+  "$target" --help >"$stdout_file" 2>"$stderr_file" ||
+    fail "expected installed repohealth command to run"
+  grep -F 'Usage: repohealth-dev' "$stdout_file" >/dev/null ||
+    fail "expected installed command name to appear in help output"
+}
+
+assert_windows_installer_shape() {
+  [ -f "$INSTALL_PS1" ] || fail "Windows installer is missing"
+  grep -F 'Invoke-WebRequest -Uri $scriptUrl -OutFile $tmp' "$INSTALL_PS1" >/dev/null ||
+    fail "expected Windows installer to download repohealth"
+  grep -F 'Get-Command bash -ErrorAction SilentlyContinue' "$INSTALL_PS1" >/dev/null ||
+    fail "expected Windows installer to check for bash"
+  grep -F 'bash "%~dp0$Bin" %*' "$INSTALL_PS1" >/dev/null ||
+    fail "expected Windows installer to create a cmd launcher through bash"
+  grep -F '[Environment]::SetEnvironmentVariable("Path", $newPath, "User")' "$INSTALL_PS1" >/dev/null ||
+    fail "expected Windows installer to update the user PATH"
+  grep -F '$env:Path = ($env:Path, $Dir) -join' "$INSTALL_PS1" >/dev/null ||
+    fail "expected Windows installer to update the current session PATH"
+}
+
 main() {
   trap cleanup EXIT
 
   [ -x "$CLI" ] || fail "repohealth is not executable: $CLI"
+  [ -x "$INSTALL_SH" ] || fail "install.sh is not executable: $INSTALL_SH"
   [ -d "$FIXTURES_DIR" ] || fail "fixtures directory is missing: $FIXTURES_DIR"
 
   TMP_ROOT="$(make_temp_dir)"
@@ -948,6 +1015,8 @@ main() {
   assert_table_respects_columns
   assert_table_status_columns_align "$workspace"
   assert_status_colors_are_fixed_rgb
+  assert_posix_installer
+  assert_windows_installer_shape
 
   # multi-directory: scan two separate roots
   local dir_a="$TMP_ROOT/multi-a"

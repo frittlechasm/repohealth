@@ -3,6 +3,7 @@
 set -u
 
 PROGRAM_NAME="${0##*/}"
+VERSION="0.1.0"
 
 FILTER_MODE="changed"
 MAX_DEPTH=""
@@ -62,8 +63,13 @@ Options:
   -p, --paths STYLE     Path display style: name, relative, full (default: name; json uses stable unique paths unless set)
   -N, --no-color        Disable ANSI color output
   -D, --detail          Alias for --output detail; with --output json, include detail fields
+  -V, --version         Show version
   -h, --help            Show this help text
 EOF
+}
+
+print_version() {
+  printf '%s %s\n' "$PROGRAM_NAME" "$VERSION"
 }
 
 die() {
@@ -2484,6 +2490,10 @@ parse_args() {
       ;;
     -D | --detail)
       request_detail_output
+      ;;
+    -V | --version)
+      print_version
+      exit 0
       ;;
     -h | --help)
       usage

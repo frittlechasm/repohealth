@@ -825,9 +825,10 @@ assert_excluded_linked_worktree_is_silent() {
   grep -F 'scanned: 0' "$stdout_file" >/dev/null || fail "expected excluded linked worktree run to scan zero repos"
 }
 
-assert_table_respects_columns() {
+assert_table_shows_default_repo_name() {
   local workspace="$TMP_ROOT/table-width-workspace"
-  local repo="$workspace/really-long-repository-name-that-would-wrap-in-narrow-captures"
+  local repo_name="really-long-repository-name-that-would-wrap-in-narrow-captures"
+  local repo="$workspace/$repo_name"
   local stdout_file="$TMP_ROOT/table-width.stdout"
   local stderr_file="$TMP_ROOT/table-width.stderr"
   local status_file="$TMP_ROOT/table-width.status"
@@ -840,7 +841,12 @@ assert_table_respects_columns() {
 
   [ "$(cat "$status_file")" -eq 0 ] || fail "expected table-width run to succeed"
   [ ! -s "$stderr_file" ] || fail "expected table-width run to avoid stderr"
-  grep -F '...' "$stdout_file" >/dev/null || fail "expected table-width output to truncate long repo names"
+  grep -F "$repo_name" "$stdout_file" >/dev/null || fail "expected table-width output to show the full repo name"
+  grep -E '^  \[git\] +\? no remote +\| +- clean *$' "$stdout_file" >/dev/null ||
+    fail "expected table-width output to keep status columns consistently spaced"
+  if grep -E '^really-long-repository-name.*\.\.\..*\[git\]' "$stdout_file" >/dev/null; then
+    fail "expected table-width output to avoid truncating the default repo name"
+  fi
   awk 'length($0) > 80 { exit 1 }' "$stdout_file" ||
     fail "expected table-width output to stay within COLUMNS=80"
 }
@@ -869,6 +875,60 @@ assert_table_status_columns_align() {
       }
     }
   ' "$stdout_file" || fail "expected table separator columns to align under LC_ALL=C"
+}
+
+assert_table_shrinks_work_before_push() {
+  local workspace="$TMP_ROOT/table-status-width-workspace"
+  local remotes="$TMP_ROOT/table-status-width-remotes"
+  local clean_repo="$workspace/miniorange-iam-2020-pratishxx"
+  local dirty_repo="$workspace/unified-ai-dash"
+  local stdout_file="$TMP_ROOT/table-status-width.stdout"
+  local stderr_file="$TMP_ROOT/table-status-width.stderr"
+  local status_file="$TMP_ROOT/table-status-width.status"
+  local i
+
+  mkdir -p "$workspace" "$remotes"
+
+  init_bare_repo "$remotes/miniorange-iam-2020-pratishxx.git"
+  init_git_repo "$clean_repo"
+  write_file "$clean_repo/README.md" $'clean repo\n'
+  commit_all "$clean_repo" "Initial clean commit" "2024-01-08T00:00:00 +0000"
+  git -C "$clean_repo" remote add origin "$remotes/miniorange-iam-2020-pratishxx.git"
+  git -C "$clean_repo" push -u origin main >/dev/null 2>&1
+
+  init_git_repo "$dirty_repo"
+  for ((i = 1; i <= 109; i++)); do
+    write_file "$dirty_repo/tracked-$i.txt" $'tracked\n'
+  done
+  commit_all "$dirty_repo" "Initial dirty commit" "2024-01-09T00:00:00 +0000"
+  for ((i = 1; i <= 109; i++)); do
+    write_file "$dirty_repo/tracked-$i.txt" $'tracked\nmodified\n'
+  done
+  for ((i = 1; i <= 46; i++)); do
+    write_file "$dirty_repo/untracked-$i.tmp" $'untracked\n'
+  done
+
+  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --filter all "$workspace"
+
+  [ "$(cat "$status_file")" -eq 0 ] || fail "expected table-status-width run to succeed"
+  [ ! -s "$stderr_file" ] || fail "expected table-status-width run to avoid stderr"
+  grep -F -- '- up to date' "$stdout_file" >/dev/null ||
+    fail "expected table-status-width output to keep push status untruncated"
+  if grep -F -- '- up...date' "$stdout_file" >/dev/null; then
+    fail "expected table-status-width output to shrink work status before push status"
+  fi
+  awk '
+    index($0, "|") {
+      col = index($0, "|")
+      if (!expected) {
+        expected = col
+      } else if (col != expected) {
+        exit 1
+      }
+    }
+  ' "$stdout_file" || fail "expected table-status-width separators to align"
+  awk 'length($0) > 80 { exit 1 }' "$stdout_file" ||
+    fail "expected table-status-width output to stay within COLUMNS=80"
 }
 
 assert_status_colors_are_fixed_rgb() {
@@ -1012,8 +1072,9 @@ main() {
   assert_jj_push_detail_preserves_draft_detail
   assert_repeated_short_exclude_flags "$workspace"
   assert_excluded_linked_worktree_is_silent
-  assert_table_respects_columns
+  assert_table_shows_default_repo_name
   assert_table_status_columns_align "$workspace"
+  assert_table_shrinks_work_before_push
   assert_status_colors_are_fixed_rgb
   assert_posix_installer
   assert_windows_installer_shape

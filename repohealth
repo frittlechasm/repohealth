@@ -1899,19 +1899,20 @@ print_default_view() {
     [ "$status_width" -gt "$max_work" ] && max_work="$status_width"
   done
 
-  local columns path_width push_width work_width total_width reduce shrink
-  local min_path_width=8 min_push_width=8 min_work_width=8
+  local columns path_width push_width work_width total_width reduce shrink wrap_paths
+  local min_push_width=8 min_work_width=8
   columns="$(terminal_columns)"
   path_width="$max_path"
   push_width="$max_push"
   work_width="$max_work"
+  wrap_paths=0
   total_width=$((path_width + 2 + max_type + 2 + push_width + 5 + work_width))
   if [ "$PATH_STYLE_EXPLICIT" -eq 0 ] && [ "$total_width" -gt "$columns" ]; then
     reduce=$((total_width - columns))
-    shrink=$((path_width - min_path_width))
-    if [ "$shrink" -gt 0 ]; then
+    shrink=$((work_width - min_work_width))
+    if [ "$reduce" -gt 0 ] && [ "$shrink" -gt 0 ]; then
       [ "$shrink" -gt "$reduce" ] && shrink="$reduce"
-      path_width=$((path_width - shrink))
+      work_width=$((work_width - shrink))
       reduce=$((reduce - shrink))
     fi
     shrink=$((push_width - min_push_width))
@@ -1920,16 +1921,21 @@ print_default_view() {
       push_width=$((push_width - shrink))
       reduce=$((reduce - shrink))
     fi
-    shrink=$((work_width - min_work_width))
-    if [ "$reduce" -gt 0 ] && [ "$shrink" -gt 0 ]; then
-      [ "$shrink" -gt "$reduce" ] && shrink="$reduce"
-      work_width=$((work_width - shrink))
+    total_width=$((path_width + 2 + max_type + 2 + push_width + 5 + work_width))
+    if [ "$total_width" -gt "$columns" ]; then
+      wrap_paths=1
+      push_width="$max_push"
+      work_width="$max_work"
     fi
   fi
 
   local padded_path padded_type padded_push padded_work
   for i in "${_shown_indices[@]}"; do
-    path_plain="$(truncate_middle "${cached_paths[$i]}" "$path_width")"
+    if [ "$wrap_paths" -eq 1 ]; then
+      path_plain="${cached_paths[$i]}"
+    else
+      path_plain="$(truncate_middle "${cached_paths[$i]}" "$path_width")"
+    fi
     type_plain="[${REPO_TYPES[$i]}]"
     push_plain="$(truncate_status_middle "${REPO_PUSH_PLAIN[$i]}" "$push_width")"
     work_plain="$(truncate_status_middle "${REPO_WORK_PLAIN[$i]}" "$work_width")"
@@ -1938,17 +1944,33 @@ print_default_view() {
     pad_to_visual "$push_plain" "$push_width" padded_push
     pad_to_visual "$work_plain" "$work_width" padded_work
     if [ "$FANCY_MODE" -eq 1 ] && [ "$ENABLE_COLOR" -eq 1 ]; then
-      printf '\033[2m%s\033[0m  \033[2m%s\033[0m  %s  \033[2m|\033[0m  %s\n' \
-        "$padded_path" \
-        "$padded_type" \
-        "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
-        "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
+      if [ "$wrap_paths" -eq 1 ]; then
+        printf '\033[2m%s\033[0m\n  \033[2m%s\033[0m  %s  \033[2m|\033[0m  %s\n' \
+          "$path_plain" \
+          "$padded_type" \
+          "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
+          "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
+      else
+        printf '\033[2m%s\033[0m  \033[2m%s\033[0m  %s  \033[2m|\033[0m  %s\n' \
+          "$padded_path" \
+          "$padded_type" \
+          "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
+          "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
+      fi
     else
-      printf '%s  %s  %s  |  %s\n' \
-        "$padded_path" \
-        "$padded_type" \
-        "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
-        "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
+      if [ "$wrap_paths" -eq 1 ]; then
+        printf '%s\n  %s  %s  |  %s\n' \
+          "$path_plain" \
+          "$padded_type" \
+          "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
+          "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
+      else
+        printf '%s  %s  %s  |  %s\n' \
+          "$padded_path" \
+          "$padded_type" \
+          "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
+          "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
+      fi
     fi
   done
 }
@@ -2061,19 +2083,20 @@ print_minimal_view() {
     [ "$status_width" -gt "$max_work" ] && max_work="$status_width"
   done
 
-  local columns path_width push_width work_width total_width reduce shrink
-  local min_path_width=8 min_push_width=6 min_work_width=6
+  local columns path_width push_width work_width total_width reduce shrink wrap_paths
+  local min_push_width=6 min_work_width=6
   columns="$(terminal_columns)"
   path_width="$max_path"
   push_width="$max_push"
   work_width="$max_work"
+  wrap_paths=0
   total_width=$((path_width + 2 + max_type + 2 + push_width + 2 + work_width))
   if [ "$PATH_STYLE_EXPLICIT" -eq 0 ] && [ "$total_width" -gt "$columns" ]; then
     reduce=$((total_width - columns))
-    shrink=$((path_width - min_path_width))
-    if [ "$shrink" -gt 0 ]; then
+    shrink=$((work_width - min_work_width))
+    if [ "$reduce" -gt 0 ] && [ "$shrink" -gt 0 ]; then
       [ "$shrink" -gt "$reduce" ] && shrink="$reduce"
-      path_width=$((path_width - shrink))
+      work_width=$((work_width - shrink))
       reduce=$((reduce - shrink))
     fi
     shrink=$((push_width - min_push_width))
@@ -2082,16 +2105,21 @@ print_minimal_view() {
       push_width=$((push_width - shrink))
       reduce=$((reduce - shrink))
     fi
-    shrink=$((work_width - min_work_width))
-    if [ "$reduce" -gt 0 ] && [ "$shrink" -gt 0 ]; then
-      [ "$shrink" -gt "$reduce" ] && shrink="$reduce"
-      work_width=$((work_width - shrink))
+    total_width=$((path_width + 2 + max_type + 2 + push_width + 2 + work_width))
+    if [ "$total_width" -gt "$columns" ]; then
+      wrap_paths=1
+      push_width="$max_push"
+      work_width="$max_work"
     fi
   fi
 
   local padded_path padded_type padded_push padded_work
   for i in "${_shown_indices[@]}"; do
-    path_plain="$(truncate_middle "${cached_paths[$i]}" "$path_width")"
+    if [ "$wrap_paths" -eq 1 ]; then
+      path_plain="${cached_paths[$i]}"
+    else
+      path_plain="$(truncate_middle "${cached_paths[$i]}" "$path_width")"
+    fi
     type_plain="${cached_types[$i]}"
     push_plain="$(truncate_status_middle "${cached_push[$i]}" "$push_width")"
     work_plain="$(truncate_status_middle "${cached_work[$i]}" "$work_width")"
@@ -2099,11 +2127,19 @@ print_minimal_view() {
     printf -v padded_type "%-${max_type}s" "$type_plain"
     pad_to_visual "$push_plain" "$push_width" padded_push
     pad_to_visual "$work_plain" "$work_width" padded_work
-    printf '%s  %s  %s  %s\n' \
-      "$padded_path" \
-      "$padded_type" \
-      "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
-      "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
+    if [ "$wrap_paths" -eq 1 ]; then
+      printf '%s\n  %s  %s  %s\n' \
+        "$path_plain" \
+        "$padded_type" \
+        "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
+        "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
+    else
+      printf '%s  %s  %s  %s\n' \
+        "$padded_path" \
+        "$padded_type" \
+        "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
+        "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
+    fi
   done
 }
 

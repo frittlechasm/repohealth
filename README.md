@@ -56,6 +56,7 @@ If `directory` is omitted, the current directory is scanned.
 | `-n`, `--depth N` | limit traversal depth |
 | `-c`, `--check` | exit non-zero when any repo needs attention |
 | `-e`, `--exclude PATTERN` | skip repos whose path matches the ERE (repeatable) |
+| `-R`, `--repo PATTERN` | only show repos whose name, relative path, or full path contains the text |
 | `-r`, `--remote NAME` | override remote used for Jujutsu push checks |
 | `-j`, `--jobs N` | limit parallel workers (default: auto, floor 8) |
 | `-o`, `--output FORMAT` | `table` · `minimal` · `detail` · `fancy-detail` · `json` |
@@ -114,6 +115,20 @@ Filters limit which repos appear in the list. Without `--filter`, repohealth sho
 | `detail` | table output plus per-commit stat details |
 | `fancy-detail` | detailed output with richer terminal formatting |
 | `json` | machine-readable repo data for scripts |
+
+To drill into one repo from a dirty summary, rerun the same parent scan with `--repo` and detail output:
+
+```bash
+./repohealth --detail --repo myapp ~/code
+```
+
+`--repo` matches the repo name, relative path, or full path. If the text matches more than one repo, all matches are shown.
+
+For scripts, use JSON detail output:
+
+```bash
+./repohealth --output json --detail --repo myapp ~/code
+```
 
 ## How it works
 

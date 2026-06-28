@@ -374,6 +374,40 @@ assert_detail_alias_matches_output_precedence() {
     fail "expected json detail fields to include untracked entries"
 }
 
+assert_repo_selector_drills_into_parent_scan() {
+  local workspace="$1"
+  local stdout_file="$TMP_ROOT/repo-selector.stdout"
+  local stderr_file="$TMP_ROOT/repo-selector.stderr"
+  local status_file="$TMP_ROOT/repo-selector.status"
+
+  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --output detail --repo ahead-dirty "$workspace"
+
+  [ "$(cat "$status_file")" -eq 0 ] || fail "expected repo selector detail run to succeed"
+  [ ! -s "$stderr_file" ] || fail "expected repo selector detail run to avoid stderr"
+  grep -F -- '-- ahead-dirty  [git]' "$stdout_file" >/dev/null ||
+    fail "expected repo selector to show matching repo detail"
+  grep -F '   ↑ Outgoing' "$stdout_file" >/dev/null ||
+    fail "expected repo selector detail run to include outgoing detail"
+  grep -F '   * Working copy' "$stdout_file" >/dev/null ||
+    fail "expected repo selector detail run to include working-copy detail"
+  grep -F '   ? Untracked' "$stdout_file" >/dev/null ||
+    fail "expected repo selector detail run to include untracked detail"
+  if grep -F -- '-- no-remote  [git]' "$stdout_file" >/dev/null ||
+    grep -F -- '-- clean-upstream  [git]' "$stdout_file" >/dev/null; then
+    fail "expected repo selector to hide non-matching repos"
+  fi
+
+  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --output json --detail --repo ahead "$workspace"
+  [ "$(cat "$status_file")" -eq 0 ] || fail "expected repo selector json detail run to succeed"
+  [ ! -s "$stderr_file" ] || fail "expected repo selector json detail run to avoid stderr"
+  grep -F '"path": "ahead-dirty"' "$stdout_file" >/dev/null ||
+    fail "expected repo selector JSON output to include selected repo"
+  if grep -F '"path": "no-remote"' "$stdout_file" >/dev/null ||
+    grep -F '"path": "clean-upstream"' "$stdout_file" >/dev/null; then
+    fail "expected repo selector JSON output to hide non-matching repos"
+  fi
+}
+
 assert_path_display() {
   local workspace="$TMP_ROOT/path-display-workspace"
   local nested_repo="$workspace/parent/child/nested-repo"
@@ -1063,6 +1097,7 @@ main() {
   assert_filter_modes
   assert_default_jobs_floor
   assert_detail_alias_matches_output_precedence "$workspace"
+  assert_repo_selector_drills_into_parent_scan "$workspace"
   assert_path_display
   assert_json_paths_stable
   assert_jj_discovery_prefers_jj

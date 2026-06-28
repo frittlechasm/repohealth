@@ -16,6 +16,7 @@ NO_COLOR_FLAG=0
 REMOTE_OVERRIDE=""
 PARALLEL_JOBS=""
 EXCLUDE_PATTERNS=()
+REPO_SELECTORS=()
 SCAN_ROOTS=()
 SCAN_ROOT_CANONS=()
 STATE_TMP_DIR=""
@@ -57,6 +58,7 @@ Options:
   -n, --depth N         Limit traversal depth
   -c, --check           Exit non-zero when any repo needs attention
   -r, --remote NAME     Override the remote used for JJ push checks
+  -R, --repo PATTERN    Show repos whose name, relative path, or full path contains PATTERN
   -j, --jobs N          Collect repo state in parallel with up to N workers
   -e, --exclude PATTERN Exclude repos whose path matches the ERE (may be repeated)
   -o, --output FORMAT   Output format: table, minimal, detail, fancy-detail, json (default: table)
@@ -678,6 +680,27 @@ is_repo_clean() {
 is_worktree_dirty() {
   local idx="$1"
   [ "${REPO_WORK_KIND[$idx]}" = "changes" ]
+}
+
+repo_matches_selectors() {
+  local idx="$1"
+  local selector name rel full
+
+  [ "${#REPO_SELECTORS[@]}" -gt 0 ] || return 0
+
+  name="$(basename_path "${REPO_ROOTS[$idx]}")"
+  rel="$(relative_path "${REPO_ROOTS[$idx]}")"
+  full="${REPO_ROOTS[$idx]}"
+
+  for selector in "${REPO_SELECTORS[@]}"; do
+    if [[ "$name" == *"$selector"* ]] ||
+      [[ "$rel" == *"$selector"* ]] ||
+      [[ "$full" == *"$selector"* ]]; then
+      return 0
+    fi
+  done
+
+  return 1
 }
 
 join_counts() {
@@ -1748,6 +1771,8 @@ repo_error_count() {
 
 should_show_repo() {
   local idx="$1"
+  repo_matches_selectors "$idx" || return 1
+
   if [ "$FILTER_MODE" = "all" ]; then
     return 0
   fi
@@ -2497,6 +2522,11 @@ parse_args() {
     -r | --remote)
       [ "$#" -ge 2 ] || die "--remote requires a value"
       REMOTE_OVERRIDE="$2"
+      shift
+      ;;
+    -R | --repo)
+      [ "$#" -ge 2 ] || die "--repo requires a value"
+      REPO_SELECTORS+=("$2")
       shift
       ;;
     -j | --jobs)

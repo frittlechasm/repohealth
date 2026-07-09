@@ -1068,6 +1068,47 @@ assert_windows_installer_shape() {
     fail "expected Windows installer to update the current session PATH"
 }
 
+assert_missing_dependencies_fail_early() {
+  local fakebin="$TMP_ROOT/missing-deps-bin"
+  local runtime_stdout="$TMP_ROOT/missing-deps-runtime.stdout"
+  local runtime_stderr="$TMP_ROOT/missing-deps-runtime.stderr"
+  local installer_stdout="$TMP_ROOT/missing-deps-installer.stdout"
+  local installer_stderr="$TMP_ROOT/missing-deps-installer.stderr"
+  local status=0
+  local bash_path
+  local sh_path
+
+  bash_path="$(command -v bash)"
+  sh_path="$(command -v sh)"
+  mkdir -p "$fakebin"
+
+  set +e
+  env LC_ALL=C PATH="$fakebin" NO_COLOR=1 "$bash_path" "$CLI" "$TMP_ROOT/empty" >"$runtime_stdout" 2>"$runtime_stderr"
+  status=$?
+  set -e
+
+  [ "$status" -eq 1 ] || fail "expected missing dependency run to exit 1, got $status"
+  [ ! -s "$runtime_stdout" ] || fail "expected missing dependency run to avoid stdout"
+  grep -F 'Error: missing required dependencies: find, awk, git' "$runtime_stderr" >/dev/null ||
+    fail "expected missing dependency error to list required tools"
+  grep -F 'Install instructions:' "$runtime_stderr" >/dev/null ||
+    fail "expected missing dependency error to include install instructions"
+  grep -F 'Optional: install jj for Jujutsu repos, and fd or fdfind for faster discovery.' "$runtime_stderr" >/dev/null ||
+    fail "expected missing dependency error to mention optional tools"
+
+  set +e
+  env LC_ALL=C PATH="$fakebin" HOME="$TMP_ROOT/missing-deps-home" "$sh_path" "$INSTALL_SH" --dir "$TMP_ROOT/missing-deps-install" >"$installer_stdout" 2>"$installer_stderr"
+  status=$?
+  set -e
+
+  [ "$status" -eq 1 ] || fail "expected missing dependency installer run to exit 1, got $status"
+  [ ! -s "$installer_stdout" ] || fail "expected missing dependency installer run to avoid stdout"
+  grep -F 'Error: missing required dependencies: bash, find, awk, git' "$installer_stderr" >/dev/null ||
+    fail "expected installer missing dependency error to list required tools"
+  grep -F 'Install instructions:' "$installer_stderr" >/dev/null ||
+    fail "expected installer missing dependency error to include install instructions"
+}
+
 main() {
   trap cleanup EXIT
 
@@ -1111,6 +1152,7 @@ main() {
   assert_table_status_columns_align "$workspace"
   assert_table_shrinks_work_before_push
   assert_status_colors_are_fixed_rgb
+  assert_missing_dependencies_fail_early
   assert_posix_installer
   assert_windows_installer_shape
 

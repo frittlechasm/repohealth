@@ -40,7 +40,7 @@ $env:REPOHEALTH_INSTALL_DIR="$HOME\bin"; iwr https://raw.githubusercontent.com/f
 
 For a local checkout, `chmod +x ./repohealth` is enough.
 
-Requires `bash`, `find`, `awk`, `git`. On Windows, install Git for Windows or another Bash provider first. Optionally `jj` for Jujutsu repos, `fd` for faster discovery.
+Requires `bash`, `find`, `awk`, and `git`. repohealth checks these at startup and exits with OS-specific install instructions before scanning if any are missing. On Windows, install Git for Windows or another Bash provider first. Optionally `jj` for Jujutsu repos, `fd` for faster discovery.
 
 ## Usage
 

@@ -32,6 +32,73 @@ info() {
   printf '%s\n' "$*" >&2
 }
 
+os_family() {
+  case "$(uname -s 2>/dev/null || printf unknown)" in
+  Darwin) printf 'macos' ;;
+  Linux) printf 'linux' ;;
+  CYGWIN* | MINGW* | MSYS*) printf 'windows' ;;
+  *) printf 'unknown' ;;
+  esac
+}
+
+print_dependency_install_help() {
+  missing="$1"
+  family="$(os_family)"
+
+  {
+    printf 'Error: missing required dependencies: %s\n' "$missing"
+    printf '\n'
+    printf 'repohealth requires bash, find, awk, and git to run.\n'
+    printf '\n'
+    printf 'Install instructions:\n'
+    case "$family" in
+    macos)
+      printf '  macOS:\n'
+      printf '    xcode-select --install\n'
+      printf '    brew install git\n'
+      printf '    If find or awk is reported missing, make sure /usr/bin is on PATH.\n'
+      ;;
+    linux)
+      printf '  Debian/Ubuntu:\n'
+      printf '    sudo apt-get update && sudo apt-get install -y bash findutils gawk git\n'
+      printf '  Fedora:\n'
+      printf '    sudo dnf install bash findutils gawk git\n'
+      printf '  Arch:\n'
+      printf '    sudo pacman -S bash findutils gawk git\n'
+      ;;
+    windows)
+      printf '  Windows:\n'
+      printf '    Install Git for Windows: https://git-scm.com/download/win\n'
+      printf '    Or run: winget install --id Git.Git -e\n'
+      printf '    Then open Git Bash or make sure Git Bash is on PATH.\n'
+      ;;
+    *)
+      printf '  Install bash, findutils, awk or gawk, and git with your OS package manager.\n'
+      ;;
+    esac
+    printf '\n'
+    printf 'Optional: install jj for Jujutsu repos, and fd or fdfind for faster discovery.\n'
+  } >&2
+}
+
+require_runtime_dependencies() {
+  missing=""
+  for cmd in bash find awk git; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      if [ -n "$missing" ]; then
+        missing="$missing, $cmd"
+      else
+        missing="$cmd"
+      fi
+    fi
+  done
+
+  if [ -n "$missing" ]; then
+    print_dependency_install_help "$missing"
+    exit 1
+  fi
+}
+
 add_path_line() {
   profile="$1"
   path_line="export PATH=\"$install_dir:\$PATH\""
@@ -122,7 +189,7 @@ done
 [ -n "${HOME:-}" ] || [ -n "${REPOHEALTH_INSTALL_DIR:-}" ] || die "HOME is unset; set REPOHEALTH_INSTALL_DIR"
 [ -n "$install_dir" ] || die "install directory is empty"
 [ -n "$bin_name" ] || die "binary name is empty"
-command -v bash >/dev/null 2>&1 || die "bash is required to run repohealth"
+require_runtime_dependencies
 
 case "$bin_name" in
 */*) die "binary name must not contain /" ;;

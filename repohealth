@@ -87,6 +87,104 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
+join_words() {
+  local sep="$1"
+  shift
+  local result="" item
+  for item in "$@"; do
+    if [ -n "$result" ]; then
+      result="${result}${sep}${item}"
+    else
+      result="$item"
+    fi
+  done
+  printf '%s' "$result"
+}
+
+os_family() {
+  case "${OSTYPE:-}" in
+  darwin*) printf 'macos'; return ;;
+  linux*) printf 'linux'; return ;;
+  msys* | mingw* | cygwin*) printf 'windows'; return ;;
+  esac
+
+  if command_exists uname; then
+    case "$(uname -s 2>/dev/null || true)" in
+    Darwin) printf 'macos'; return ;;
+    Linux) printf 'linux'; return ;;
+    CYGWIN* | MINGW* | MSYS*) printf 'windows'; return ;;
+    esac
+  fi
+
+  printf 'unknown'
+}
+
+print_dependency_install_help() {
+  local missing="$1"
+  local family
+  family="$(os_family)"
+
+  {
+    printf 'Error: missing required dependencies: %s\n' "$missing"
+    printf '\n'
+    printf 'repohealth requires bash, find, awk, and git to run.\n'
+    printf '\n'
+    printf 'Install instructions:\n'
+    case "$family" in
+    macos)
+      printf '  macOS:\n'
+      printf '    xcode-select --install\n'
+      printf '    brew install git\n'
+      printf '    If find or awk is reported missing, make sure /usr/bin is on PATH.\n'
+      ;;
+    linux)
+      printf '  Debian/Ubuntu:\n'
+      printf '    sudo apt-get update && sudo apt-get install -y bash findutils gawk git\n'
+      printf '  Fedora:\n'
+      printf '    sudo dnf install bash findutils gawk git\n'
+      printf '  Arch:\n'
+      printf '    sudo pacman -S bash findutils gawk git\n'
+      ;;
+    windows)
+      printf '  Windows:\n'
+      printf '    Install Git for Windows: https://git-scm.com/download/win\n'
+      printf '    Or run: winget install --id Git.Git -e\n'
+      printf '    Then open Git Bash or make sure Git Bash is on PATH.\n'
+      ;;
+    *)
+      printf '  Install bash, findutils, awk or gawk, and git with your OS package manager.\n'
+      ;;
+    esac
+    printf '\n'
+    printf 'Optional: install jj for Jujutsu repos, and fd or fdfind for faster discovery.\n'
+  } >&2
+}
+
+require_startup_dependencies() {
+  local missing=() cmd
+
+  for cmd in find awk git; do
+    if ! command_exists "$cmd"; then
+      missing+=("$cmd")
+    fi
+  done
+
+  if [ "${#missing[@]}" -gt 0 ]; then
+    print_dependency_install_help "$(join_words ', ' "${missing[@]}")"
+    exit 1
+  fi
+
+  HAVE_GIT=1
+  if command_exists jj; then
+    HAVE_JJ=1
+  fi
+  if command_exists fd; then
+    FD_CMD="fd"
+  elif command_exists fdfind; then
+    FD_CMD="fdfind"
+  fi
+}
+
 set_output_format() {
   local format="$1"
   OUTPUT="$format"
@@ -2587,6 +2685,7 @@ parse_args() {
 main() {
   parse_args "$@"
   trap cleanup_temp_state EXIT
+  require_startup_dependencies
 
   if [ "${#SCAN_ROOTS[@]}" -eq 0 ]; then
     SCAN_ROOTS=(".")
@@ -2598,21 +2697,6 @@ main() {
     [ -n "$_canon" ] || die "failed to resolve scan root: $_root"
     SCAN_ROOT_CANONS+=("$_canon")
   done
-
-  if command_exists git; then
-    HAVE_GIT=1
-  fi
-  if command_exists jj; then
-    HAVE_JJ=1
-  fi
-  if command_exists fd; then
-    FD_CMD="fd"
-  elif command_exists fdfind; then
-    FD_CMD="fdfind"
-  fi
-  if [ "$HAVE_GIT" -eq 0 ] && [ "$HAVE_JJ" -eq 0 ]; then
-    die "neither git nor jj is available"
-  fi
 
   if [ "$NO_COLOR_FLAG" -eq 0 ] && [ -z "${NO_COLOR:-}" ] &&
     { [ -t 1 ] || [ "${REPOHEALTH_FORCE_COLOR:-}" = "1" ]; }; then

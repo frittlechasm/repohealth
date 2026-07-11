@@ -1109,6 +1109,12 @@ assert_missing_dependencies_fail_early() {
     fail "expected installer missing dependency error to include install instructions"
 }
 
+assert_version() {
+  local output
+  output="$("$CLI" --version)"
+  [ "$output" = "repohealth 0.1.1" ] || fail "expected version 0.1.1, got: $output"
+}
+
 main() {
   trap cleanup EXIT
 
@@ -1123,6 +1129,7 @@ main() {
 
   mkdir -p "$TMP_ROOT/empty"
 
+  assert_version
   assert_snapshot "empty" "$TMP_ROOT/empty" --jobs 1
   assert_snapshot "default" "$workspace" --jobs 1
   assert_snapshot "minimal" "$workspace" --jobs 1 --output minimal

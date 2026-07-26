@@ -648,6 +648,46 @@ assert_jj_work_state_uses_diff_only() {
   grep -E -- '-C .*/mixed status --porcelain=v1 --untracked-files=normal$' "$git_calls_file" >/dev/null || fail "expected mixed repo to use git status for work-state fallback"
 }
 
+assert_colocated_repo_without_jj_uses_git_work_state() {
+  local workspace="$TMP_ROOT/jj-unavailable-workspace"
+  local repo="$workspace/mixed"
+  local stdout_file="$TMP_ROOT/jj-unavailable.stdout"
+  local stderr_file="$TMP_ROOT/jj-unavailable.stderr"
+
+  init_git_repo "$repo"
+  write_file "$repo/.jj/repo/config-id" 'test'
+  write_file "$repo/.git/info/exclude" $'/.jj/\n'
+  write_file "$repo/tracked.txt" $'committed\n'
+  commit_all "$repo" "Initial commit" "2024-03-01T00:00:00 +0000"
+  write_file "$repo/tracked.txt" $'committed\nmodified\n'
+  write_file "$repo/untracked.txt" $'new\n'
+  write_file "$workspace/pure-jj/.jj/repo/config-id" 'test'
+
+  local status=0
+  set +e
+  (
+    # Keep the result deterministic on hosts where jj is installed.
+    command() {
+      if [ "${1:-}" = "-v" ] && [ "${2:-}" = "jj" ]; then
+        return 1
+      fi
+      builtin command "$@"
+    }
+    export -f command
+    env LC_ALL=C TZ=UTC COLUMNS=80 NO_COLOR=1 \
+      "$CLI" --jobs 1 --filter all "$workspace"
+  ) >"$stdout_file" 2>"$stderr_file"
+  status=$?
+  set -e
+
+  [ "$status" -eq 0 ] || fail "colocated missing-jj run failed with status $status"
+  [ ! -s "$stderr_file" ] || fail "colocated missing-jj run wrote unexpected stderr"
+  grep -E 'mixed +\[jj\].*!! jj unavailable.*\|  \* 1 modified, 1 untracked *$' "$stdout_file" >/dev/null ||
+    fail "expected colocated repo without jj to report Git worktree changes"
+  grep -E 'pure-jj +\[jj\].*!! jj unavailable.*\|  !! jj unavailable *$' "$stdout_file" >/dev/null ||
+    fail "expected pure jj repo without jj to keep both states unavailable"
+}
+
 assert_jj_push_state_defers_draft_count() {
   local workspace="$TMP_ROOT/jj-push-workspace"
   local fakebin="$TMP_ROOT/jj-push-bin"
@@ -1150,6 +1190,7 @@ main() {
   assert_json_paths_stable
   assert_jj_discovery_prefers_jj
   assert_jj_work_state_uses_diff_only
+  assert_colocated_repo_without_jj_uses_git_work_state
   assert_jj_push_state_defers_draft_count
   assert_jj_push_state_reports_missing_description
   assert_jj_push_detail_preserves_draft_detail

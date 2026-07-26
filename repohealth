@@ -1745,14 +1745,18 @@ collect_repo_state() {
     return
   fi
 
-  if [ "$HAVE_JJ" -ne 1 ]; then
-    set_push_status "$idx" "unavailable" "!! jj unavailable" "jj is not installed"
-    set_work_status "$idx" "unavailable" "!! jj unavailable" "jj is not installed"
-    return
-  fi
-
   if [ -e "$root/.git" ]; then
     has_git_checkout=1
+  fi
+
+  if [ "$HAVE_JJ" -ne 1 ]; then
+    set_push_status "$idx" "unavailable" "!! jj unavailable" "jj is not installed"
+    if [ "$has_git_checkout" -eq 1 ] && [ "$HAVE_GIT" -eq 1 ]; then
+      collect_git_work_state "$idx" "$root"
+    else
+      set_work_status "$idx" "unavailable" "!! jj unavailable" "jj is not installed"
+    fi
+    return
   fi
 
   collect_jj_push_state "$idx" "$root"

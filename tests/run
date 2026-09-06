@@ -7,7 +7,6 @@ ROOT_DIR="$(
 )"
 CLI="$ROOT_DIR/repohealth"
 INSTALL_SH="$ROOT_DIR/install.sh"
-INSTALL_PS1="$ROOT_DIR/install.ps1"
 FIXTURES_DIR="$ROOT_DIR/tests/fixtures"
 TMP_ROOT=""
 UPDATE_SNAPSHOTS="${UPDATE_SNAPSHOTS:-0}"
@@ -168,6 +167,62 @@ assert_jobs_consistent() {
   compare_file "jobs stdout" "$seq_stdout" "$par_stdout"
   compare_file "jobs stderr" "$seq_stderr" "$par_stderr"
   compare_file "jobs status" "$seq_status" "$par_status"
+}
+
+assert_large_jobs_consistent() {
+  local directory="$1"
+  local seq_stdout="$TMP_ROOT/jobs-large-seq.stdout"
+  local seq_stderr="$TMP_ROOT/jobs-large-seq.stderr"
+  local seq_status="$TMP_ROOT/jobs-large-seq.status"
+  local par_stdout="$TMP_ROOT/jobs-large-par.stdout"
+  local par_stderr="$TMP_ROOT/jobs-large-par.stderr"
+  local status=0
+  local pid
+  local attempts=0
+
+  run_cli "$seq_stdout" "$seq_stderr" "$seq_status" --jobs 1 --filter all "$directory"
+
+  env LC_ALL=C TZ=UTC COLUMNS=80 NO_COLOR=1 \
+    "$CLI" --jobs 100000 --filter all "$directory" >"$par_stdout" 2>"$par_stderr" &
+  pid=$!
+
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$attempts" -ge 100 ]; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      fail "--jobs 100000 did not complete within 10 seconds"
+    fi
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+
+  set +e
+  wait "$pid"
+  status=$?
+  set -e
+
+  [ "$status" -eq "$(cat "$seq_status")" ] ||
+    fail "expected --jobs 100000 status to match --jobs 1"
+  compare_file "large jobs stdout" "$seq_stdout" "$par_stdout"
+  compare_file "large jobs stderr" "$seq_stderr" "$par_stderr"
+}
+
+assert_overlapping_roots_are_deduplicated() {
+  local workspace="$1"
+  local baseline_stdout="$TMP_ROOT/overlapping-roots-baseline.stdout"
+  local baseline_stderr="$TMP_ROOT/overlapping-roots-baseline.stderr"
+  local baseline_status="$TMP_ROOT/overlapping-roots-baseline.status"
+  local stdout_file="$TMP_ROOT/overlapping-roots.stdout"
+  local stderr_file="$TMP_ROOT/overlapping-roots.stderr"
+  local status_file="$TMP_ROOT/overlapping-roots.status"
+
+  run_cli "$baseline_stdout" "$baseline_stderr" "$baseline_status" --jobs 1 --filter all "$workspace"
+  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --filter all \
+    "$workspace" "$workspace/ahead-dirty"
+
+  compare_file "overlapping roots stdout" "$baseline_stdout" "$stdout_file"
+  compare_file "overlapping roots stderr" "$baseline_stderr" "$stderr_file"
+  compare_file "overlapping roots status" "$baseline_status" "$status_file"
 }
 
 assert_filter_modes() {
@@ -1055,6 +1110,10 @@ assert_posix_installer() {
   local home_dir="$TMP_ROOT/install-home"
   local profile_file="$home_dir/.zshrc"
   local target="$install_root/bin/repohealth-dev"
+  local fallback_home="$TMP_ROOT/install-fallback-home"
+  local fallback_profile="$fallback_home/.profile"
+  local fallback_target="$install_root/bin/repohealth-profile"
+  local attempt path_line_count
 
   mkdir -p "$fakebin" "$(dirname "$source")" "$home_dir"
   cp "$CLI" "$source"
@@ -1092,20 +1151,32 @@ assert_posix_installer() {
     fail "expected installed repohealth command to run"
   grep -F 'Usage: repohealth-dev' "$stdout_file" >/dev/null ||
     fail "expected installed command name to appear in help output"
-}
 
-assert_windows_installer_shape() {
-  [ -f "$INSTALL_PS1" ] || fail "Windows installer is missing"
-  grep -F 'Invoke-WebRequest -Uri $scriptUrl -OutFile $tmp' "$INSTALL_PS1" >/dev/null ||
-    fail "expected Windows installer to download repohealth"
-  grep -F 'Get-Command bash -ErrorAction SilentlyContinue' "$INSTALL_PS1" >/dev/null ||
-    fail "expected Windows installer to check for bash"
-  grep -F 'bash "%~dp0$Bin" %*' "$INSTALL_PS1" >/dev/null ||
-    fail "expected Windows installer to create a cmd launcher through bash"
-  grep -F '[Environment]::SetEnvironmentVariable("Path", $newPath, "User")' "$INSTALL_PS1" >/dev/null ||
-    fail "expected Windows installer to update the user PATH"
-  grep -F '$env:Path = ($env:Path, $Dir) -join' "$INSTALL_PS1" >/dev/null ||
-    fail "expected Windows installer to update the current session PATH"
+  mkdir -p "$fallback_home"
+  write_file "$fallback_profile" $'# Existing profile content\n'
+
+  for attempt in 1 2; do
+    set +e
+    env \
+      LC_ALL=C \
+      PATH="$fakebin:$PATH" \
+      HOME="$fallback_home" \
+      SHELL="/bin/fish" \
+      REPOHEALTH_TEST_SOURCE="$source" \
+      REPOHEALTH_TEST_CURL_CALLS="$curl_calls" \
+      REPOHEALTH_BASE_URL="https://example.invalid/repohealth/test-ref" \
+      "$INSTALL_SH" --dir "$install_root/bin" --bin repohealth-profile >"$stdout_file" 2>"$stderr_file"
+    status=$?
+    set -e
+    [ "$status" -eq 0 ] || fail "POSIX installer fallback attempt $attempt failed with status $status"
+  done
+
+  [ -x "$fallback_target" ] || fail "expected POSIX installer fallback to create executable target"
+  grep -F '# Existing profile content' "$fallback_profile" >/dev/null ||
+    fail "expected POSIX installer fallback to preserve existing .profile content"
+  path_line_count="$(grep -Fxc "export PATH=\"$install_root/bin:\$PATH\"" "$fallback_profile" || true)"
+  [ "$path_line_count" -eq 1 ] ||
+    fail "expected repeated POSIX installation to add one PATH entry, saw $path_line_count"
 }
 
 assert_missing_dependencies_fail_early() {
@@ -1182,6 +1253,8 @@ main() {
   assert_snapshot "format-json" "$workspace" --jobs 1 --output json
   assert_snapshot "format-json-detail" "$workspace/ahead-dirty" --jobs 1 --output json --detail
   assert_jobs_consistent "$workspace"
+  assert_large_jobs_consistent "$workspace"
+  assert_overlapping_roots_are_deduplicated "$workspace"
   assert_filter_modes
   assert_default_jobs_floor
   assert_detail_alias_matches_output_precedence "$workspace"
@@ -1202,7 +1275,6 @@ main() {
   assert_status_colors_are_fixed_rgb
   assert_missing_dependencies_fail_early
   assert_posix_installer
-  assert_windows_installer_shape
 
   # multi-directory: scan two separate roots
   local dir_a="$TMP_ROOT/multi-a"

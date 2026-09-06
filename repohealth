@@ -21,7 +21,6 @@ SCAN_ROOTS=()
 SCAN_ROOT_CANONS=()
 STATE_TMP_DIR=""
 
-HAVE_GIT=0
 HAVE_JJ=0
 FD_CMD=""
 ENABLE_COLOR=0
@@ -174,7 +173,6 @@ require_startup_dependencies() {
     exit 1
   fi
 
-  HAVE_GIT=1
   if command_exists jj; then
     HAVE_JJ=1
   fi
@@ -243,7 +241,6 @@ print_json_string_array() {
   local block="$2"
   local first=1 line je
 
-  block="$(trim_trailing_newlines "$block")"
   if [ -z "$block" ]; then
     printf '[]'
     return
@@ -267,7 +264,6 @@ print_json_numstat_array() {
   local block="$2"
   local first=1 added removed path je
 
-  block="$(trim_trailing_newlines "$block")"
   if [ -z "$block" ]; then
     printf '[]'
     return
@@ -304,7 +300,6 @@ print_json_commit_detail_array() {
   local first=1 line current_title current_stats je
   local tab=$'\t'
 
-  raw="$(trim_trailing_newlines "$raw")"
   if [ -z "$raw" ]; then
     printf '[]'
     return
@@ -518,14 +513,6 @@ colorize_status() {
   fi
 }
 
-trim_trailing_newlines() {
-  local value="$1"
-  while [ "${value%$'\n'}" != "$value" ]; do
-    value="${value%$'\n'}"
-  done
-  printf '%s' "$value"
-}
-
 cleanup_temp_state() {
   if [ -n "$STATE_TMP_DIR" ] && [ -d "$STATE_TMP_DIR" ]; then
     rm -rf "$STATE_TMP_DIR"
@@ -569,18 +556,6 @@ contains_line() {
   printf '%s\n' "$haystack" | grep -F "$needle" >/dev/null 2>&1
 }
 
-find_repo_index() {
-  local root="$1"
-  local i
-  for ((i = 0; i < ${#REPO_ROOTS[@]}; i++)); do
-    if [ "${REPO_ROOTS[$i]}" = "$root" ]; then
-      printf '%s' "$i"
-      return 0
-    fi
-  done
-  return 1
-}
-
 init_repo_slot() {
   REPO_PUSH_KIND+=("")
   REPO_PUSH_PLAIN+=("")
@@ -602,12 +577,14 @@ add_repo() {
   local root="$1"
   local type="$2"
   local idx
-  if idx="$(find_repo_index "$root")"; then
-    if [ "${REPO_TYPES[$idx]}" = "git" ] && [ "$type" = "jj" ]; then
-      REPO_TYPES[$idx]="jj"
+  for ((idx = 0; idx < ${#REPO_ROOTS[@]}; idx++)); do
+    if [ "${REPO_ROOTS[$idx]}" = "$root" ]; then
+      if [ "$type" = "jj" ]; then
+        REPO_TYPES[$idx]="jj"
+      fi
+      return
     fi
-    return
-  fi
+  done
 
   REPO_ROOTS+=("$root")
   REPO_TYPES+=("$type")
@@ -764,17 +741,6 @@ set_work_status() {
   REPO_WORK_UNTRACKED_COUNT[$idx]="$untracked_count"
 }
 
-set_draft_detail() {
-  local idx="$1"
-  local detail="$2"
-  REPO_DRAFT_DETAIL[$idx]="$detail"
-}
-
-is_repo_clean() {
-  local idx="$1"
-  [ "${REPO_PUSH_KIND[$idx]}" = "clean" ] && [ "${REPO_WORK_KIND[$idx]}" = "clean" ]
-}
-
 is_worktree_dirty() {
   local idx="$1"
   [ "${REPO_WORK_KIND[$idx]}" = "changes" ]
@@ -879,8 +845,10 @@ truncate_status_middle() {
 repeat_char() {
   local char="$1"
   local count="$2"
+  local repeated
   [ "$count" -le 0 ] 2>/dev/null && return
-  printf '%*s' "$count" '' | tr ' ' "$char"
+  printf -v repeated '%*s' "$count" ''
+  printf '%s' "${repeated// /$char}"
 }
 
 make_diff_bar() {
@@ -918,21 +886,12 @@ make_block_diff_bar() {
   fi
 }
 
-ltrim_spaces() {
-  local v="$1"
-  while [ -n "$v" ] && [ "${v# }" != "$v" ]; do v="${v# }"; done
-  printf '%s' "$v"
-}
-
 tsv_max_total() {
   local block="$1"
   local max=0 added removed path t
-  block="$(trim_trailing_newlines "$block")"
   [ -n "$block" ] || { printf '0'; return; }
   while IFS=$'\t' read -r added removed path; do
     [ -n "$added$removed$path" ] || continue
-    added="$(ltrim_spaces "$added")"
-    removed="$(ltrim_spaces "$removed")"
     if [ "$added" != "-" ] && [ "$removed" != "-" ]; then
       t=$((added + removed))
       if [ "$t" -gt "$max" ]; then max="$t"; fi
@@ -955,16 +914,12 @@ format_compact_stat_tsv() {
   local result=""
   local file_word="files"
 
-  block="$(trim_trailing_newlines "$block")"
   if [ -z "$block" ]; then
     return
   fi
 
   while IFS=$'\t' read -r added removed path; do
     [ -n "$added$removed$path" ] || continue
-
-    added="$(ltrim_spaces "$added")"
-    removed="$(ltrim_spaces "$removed")"
 
     count=$((count + 1))
     if [ "$added" = "-" ] || [ "$removed" = "-" ]; then
@@ -1129,12 +1084,6 @@ collect_git_unborn_worktree_numstat() {
   printf '%s' "$detail"
 }
 
-collect_jj_stat_tsv() {
-  local root="$1"
-  local revset="$2"
-  jj -R "$root" log -r "$revset" --no-graph -T 'diff.stat().files().map(|f| f.lines_added() ++ "\t" ++ f.lines_removed() ++ "\t" ++ f.display_diff_path() ++ "\n")' 2>/dev/null || true
-}
-
 build_jj_commit_detail() {
   local root="$1"
   local revset="$2"
@@ -1143,7 +1092,6 @@ build_jj_commit_detail() {
   local commit_titles=() commit_stats_list=()
 
   raw="$(jj -R "$root" log -r "$revset" --reversed --no-graph -T '"__COMMIT__\t" ++ commit_id.short() ++ "\t" ++ description.first_line() ++ "\n" ++ diff.stat().files().map(|f| f.lines_added() ++ "\t" ++ f.lines_removed() ++ "\t" ++ f.display_diff_path() ++ "\n") ++ "__END__\n"' 2>/dev/null || true)"
-  raw="$(trim_trailing_newlines "$raw")"
   if [ -z "$raw" ]; then
     return
   fi
@@ -1414,7 +1362,6 @@ collect_jj_drafts() {
   local root="$1"
   local output
   output="$(jj -R "$root" log -r "$(jj_draft_revset)" --no-graph -T 'change_id.short() ++ " " ++ description.first_line() ++ "\n"' 2>/dev/null || true)"
-  output="$(trim_trailing_newlines "$output")"
   printf '%s' "$output"
 }
 
@@ -1473,12 +1420,6 @@ build_jj_bookmark_breakdown() {
 collect_jj_work_state() {
   local idx="$1"
   local root="$2"
-  local using_git="${3:-0}"
-
-  if [ "$using_git" -eq 1 ]; then
-    collect_git_work_state "$idx" "$root"
-    return
-  fi
 
   local diff_output
   if ! diff_output="$(jj -R "$root" diff --name-only 2>&1)"; then
@@ -1498,7 +1439,7 @@ collect_jj_work_state() {
   if [ "$modified" -gt 0 ]; then
     local detail=""
     if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
-      detail="$(collect_jj_stat_tsv "$root" '@')"
+      detail="$(jj -R "$root" log -r '@' --no-graph -T 'diff.stat().files().map(|f| f.lines_added() ++ "\t" ++ f.lines_removed() ++ "\t" ++ f.display_diff_path() ++ "\n")' 2>/dev/null || true)"
     fi
     set_work_status "$idx" "changes" "* ${modified} modified" "" "$detail" "" "$modified" 0
   else
@@ -1543,24 +1484,21 @@ collect_jj_push_state() {
   local idx="$1"
   local root="$2"
 
-  local draft_detail="" draft_count=0 draft_loaded=0
+  local draft_detail="" draft_count=0
 
   local remote_output remote_count
   remote_output="$(jj -R "$root" git remote list 2>/dev/null || true)"
   remote_count="$(count_nonempty_lines "$remote_output")"
   if [ "$remote_count" -eq 0 ] && [ -z "$REMOTE_OVERRIDE" ]; then
-    if [ "$draft_loaded" -eq 0 ]; then
-      if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
-        draft_detail="$(collect_jj_drafts "$root")"
-        draft_count="$(count_nonempty_lines "$draft_detail")"
-        set_draft_detail "$idx" "$draft_detail"
-      else
-        draft_count="$(count_jj_drafts "$root")"
-      fi
-      if [ -z "$draft_count" ] || ! is_integer "$draft_count"; then
-        draft_count=0
-      fi
-      draft_loaded=1
+    if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
+      draft_detail="$(collect_jj_drafts "$root")"
+      draft_count="$(count_nonempty_lines "$draft_detail")"
+      REPO_DRAFT_DETAIL[$idx]="$draft_detail"
+    else
+      draft_count="$(count_jj_drafts "$root")"
+    fi
+    if [ -z "$draft_count" ] || ! is_integer "$draft_count"; then
+      draft_count=0
     fi
     if [ "$draft_count" -gt 0 ]; then
       set_push_status "$idx" "draft" "~ ${draft_count} draft only" "draft commits are not pushable until bookmarked" "" "$draft_count"
@@ -1600,7 +1538,6 @@ collect_jj_push_state() {
         }
       }
     ')"
-    no_desc_ids="$(trim_trailing_newlines "$no_desc_ids")"
     if [ -n "$no_desc_ids" ]; then
       no_desc_count="$(count_nonempty_lines "$no_desc_ids")"
       if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
@@ -1648,18 +1585,15 @@ collect_jj_push_state() {
         detail="$(build_jj_outgoing_detail "$root" "$dry_run_output")"
       fi
     fi
-    if [ "$draft_loaded" -eq 0 ]; then
-      if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
-        draft_detail="$(collect_jj_drafts "$root")"
-        draft_count="$(count_nonempty_lines "$draft_detail")"
-        set_draft_detail "$idx" "$draft_detail"
-      else
-        draft_count="$(count_jj_drafts "$root")"
-      fi
-      if [ -z "$draft_count" ] || ! is_integer "$draft_count"; then
-        draft_count=0
-      fi
-      draft_loaded=1
+    if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
+      draft_detail="$(collect_jj_drafts "$root")"
+      draft_count="$(count_nonempty_lines "$draft_detail")"
+      REPO_DRAFT_DETAIL[$idx]="$draft_detail"
+    else
+      draft_count="$(count_jj_drafts "$root")"
+    fi
+    if [ -z "$draft_count" ] || ! is_integer "$draft_count"; then
+      draft_count=0
     fi
     local bk_breakdown
     bk_breakdown="$(build_jj_bookmark_breakdown "$root" "$selected_remote")"
@@ -1707,18 +1641,15 @@ collect_jj_push_state() {
     return
   fi
 
-  if [ "$draft_loaded" -eq 0 ]; then
-    if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
-      draft_detail="$(collect_jj_drafts "$root")"
-      draft_count="$(count_nonempty_lines "$draft_detail")"
-      set_draft_detail "$idx" "$draft_detail"
-    else
-      draft_count="$(count_jj_drafts "$root")"
-    fi
-    if [ -z "$draft_count" ] || ! is_integer "$draft_count"; then
-      draft_count=0
-    fi
-    draft_loaded=1
+  if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
+    draft_detail="$(collect_jj_drafts "$root")"
+    draft_count="$(count_nonempty_lines "$draft_detail")"
+    REPO_DRAFT_DETAIL[$idx]="$draft_detail"
+  else
+    draft_count="$(count_jj_drafts "$root")"
+  fi
+  if [ -z "$draft_count" ] || ! is_integer "$draft_count"; then
+    draft_count=0
   fi
   if [ "$draft_count" -gt 0 ]; then
     set_push_status "$idx" "draft" "~ ${draft_count} draft only" "draft commits are not pushable until bookmarked" "" "$draft_count"
@@ -1735,12 +1666,6 @@ collect_repo_state() {
   local has_git_checkout=0
 
   if [ "$type" = "git" ]; then
-    if [ "$HAVE_GIT" -ne 1 ]; then
-      set_push_status "$idx" "unavailable" "!! git unavailable" "git is not installed"
-      set_work_status "$idx" "unavailable" "!! git unavailable" "git is not installed"
-      return
-    fi
-
     collect_git_state "$idx" "$root"
     return
   fi
@@ -1751,7 +1676,7 @@ collect_repo_state() {
 
   if [ "$HAVE_JJ" -ne 1 ]; then
     set_push_status "$idx" "unavailable" "!! jj unavailable" "jj is not installed"
-    if [ "$has_git_checkout" -eq 1 ] && [ "$HAVE_GIT" -eq 1 ]; then
+    if [ "$has_git_checkout" -eq 1 ]; then
       collect_git_work_state "$idx" "$root"
     else
       set_work_status "$idx" "unavailable" "!! jj unavailable" "jj is not installed"
@@ -1760,10 +1685,10 @@ collect_repo_state() {
   fi
 
   collect_jj_push_state "$idx" "$root"
-  if [ "$has_git_checkout" -eq 1 ] && [ "$HAVE_GIT" -eq 1 ]; then
-    collect_jj_work_state "$idx" "$root" 1
+  if [ "$has_git_checkout" -eq 1 ]; then
+    collect_git_work_state "$idx" "$root"
   else
-    collect_jj_work_state "$idx" "$root" 0
+    collect_jj_work_state "$idx" "$root"
   fi
 }
 
@@ -1799,13 +1724,6 @@ load_repo_state() {
   . "$state_file"
 }
 
-emit_repo_warnings() {
-  local err_file="$1"
-  if [ -s "$err_file" ]; then
-    cat "$err_file" >&2
-  fi
-}
-
 collect_all_repo_states() {
   local repo_count="${#REPO_ROOTS[@]}"
   local jobs="$PARALLEL_JOBS"
@@ -1813,6 +1731,11 @@ collect_all_repo_states() {
 
   if [ "$repo_count" -eq 0 ]; then
     return
+  fi
+
+  # Extra tokens cannot increase concurrency and can fill the FIFO before readers start.
+  if [ "$jobs" -gt "$repo_count" ]; then
+    jobs="$repo_count"
   fi
 
   if [ "$jobs" -le 1 ] || [ "$repo_count" -le 1 ]; then
@@ -1824,8 +1747,7 @@ collect_all_repo_states() {
 
   STATE_TMP_DIR="$(make_temp_dir)" || die "failed to create temporary directory for parallel state collection"
 
-  # FIFO-based semaphore: keeps exactly $jobs workers running at all times.
-  # Unlike fixed batches, a slow repo doesn't stall the next batch from starting.
+  # Start another repo as soon as any worker releases its slot.
   local sem_fifo="$STATE_TMP_DIR/sem"
   mkfifo "$sem_fifo"
   exec 3<>"$sem_fifo"
@@ -1833,7 +1755,7 @@ collect_all_repo_states() {
     printf 'x' >&3
   done
 
-  local pids=() idx state_file err_file
+  local pids=() pid idx state_file err_file
   for ((idx = 0; idx < repo_count; idx++)); do
     read -r -n 1 -u 3  # acquire a slot; blocks when all $jobs slots are taken
     state_file="$STATE_TMP_DIR/repo.$idx.state"
@@ -1855,20 +1777,10 @@ collect_all_repo_states() {
     state_file="$STATE_TMP_DIR/repo.$idx.state"
     err_file="$STATE_TMP_DIR/repo.$idx.err"
     load_repo_state "$idx" "$state_file"
-    emit_repo_warnings "$err_file"
+    if [ -s "$err_file" ]; then
+      cat "$err_file" >&2
+    fi
   done
-}
-
-repo_error_count() {
-  local idx="$1"
-  case "${REPO_PUSH_KIND[$idx]}:${REPO_WORK_KIND[$idx]}" in
-  *error* | *unavailable*)
-    printf '1'
-    ;;
-  *)
-    printf '0'
-    ;;
-  esac
 }
 
 should_show_repo() {

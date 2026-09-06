@@ -141,9 +141,6 @@ ensure_path_setup() {
     esac
   fi
 
-  if [ -f "$HOME/.profile" ]; then
-    add_path_line "$HOME/.profile" && return 0
-  fi
   add_path_line "$HOME/.profile" && return 0
 }
 

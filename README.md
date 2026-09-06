@@ -134,7 +134,7 @@ For scripts, use JSON detail output:
 
 - Single self-contained Bash script — no build step, no daemon, no framework.
 - Discovers `.git` and `.jj` repos recursively; prefers `jj` when both exist at the same root.
-- Collects repo state in bounded parallel batches; renders in sorted path order for stable output.
+- Collects repo state with bounded parallel workers; renders in sorted path order for stable output.
 - Uses `fd`/`fdfind` when available for faster traversal, falls back to `find`.
 - Skips `node_modules`, `vendor`, `target`, `__pycache__`, `.svn`, `.hg`, and linked Git worktrees.
 - Repo rows go to stdout; warnings and errors go to stderr.

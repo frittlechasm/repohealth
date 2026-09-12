@@ -1,18 +1,32 @@
-- Keep this file small and concise.
-- Update this file only when you have a new learning or a new rule is introduced.
+# Scope
 
-# Docs
-- See `README.md` for the full plan, design decisions, and validation checklist.
+- Keep only durable repo-specific guidance here; avoid repeating global instructions or skills.
+- See `README.md` for installation, usage, and output semantics.
+- Keep `repohealth` a self-contained Bash script with no build step.
 
-# Task Rules
-- When adding or changing a feature, add or update the corresponding tests.
-- Never consider a task complete until `./tests/run` passes with no failures.
+# Restrictions
+- Preserve Bash 3.2 compatibility on macOS and Linux, and Windows support through Bash.
+- Keep runtime requirements to Bash, Git, and standard Unix tools.
+- `jj`, `fd`/`fdfind`, and `realpath` remain optional.
+- This restriction does not apply to development tools or skill workflows.
 
-# Architecture Restraints
-- Single self-contained Bash script (`repohealth`). No build, test, or lint pipeline.
-- No dependencies beyond `bash`, `find`, `awk`, `git`, and optional `jj` and `realpath`.
-- Must run correctly on macOS and Linux.
-- Normal repo output goes to stdout; warnings, per-repo errors, and startup errors go to stderr.
-- Use two-pass rendering: collect repo data first, then print after widths are known.
-- When both `.git` and `.jj` exist at the same root, treat the repo as `jj`.
-- With `jj git push --dry-run`, only skip draft counting on the unambiguous clean path.
+# Validation
+
+- Add or update behavioral tests for feature changes and bug fixes.
+- For CLI output changes, update affected snapshots in `tests/fixtures` and check narrow terminals.
+- `LC_ALL=C`, and color suppression when relevant. Review snapshot diffs.
+- Run `./tests/run` after changes; it must pass before the task is complete.
+- For performance changes, compare output and timings on the same workspace.
+- Use `tests/benchmark` for timing, not wall-clock assertions in regression tests.
+
+# Behavior to preserve
+
+- Send normal output to stdout and warnings and errors to stderr.
+- Collect data before rendering, calculate widths across rows, and keep sorted output identical between scans.
+- Keep full repo names visible by default; wrap rather than truncate them.
+- Measure status symbols by display width, not byte length.
+- Keep JSON paths stable and unambiguous by default, independent of human display names.
+- Prefer JJ when `.git` and `.jj` coexist. If `jj` is unavailable, use Git for working-copy state.
+- Count JJ outgoing commits from revsets, not bookmark actions or rendered stat lines.
+- Only skip JJ draft counting on an unambiguous clean dry-run result.
+- `Nothing changed.` alongside `No bookmarks found in the default push revset` is ambiguous.

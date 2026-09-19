@@ -1179,6 +1179,161 @@ assert_posix_installer() {
     fail "expected repeated POSIX installation to add one PATH entry, saw $path_line_count"
 }
 
+assert_self_update() {
+  local update_root="$TMP_ROOT/self-update"
+  local fakebin="$update_root/fakebin"
+  local target="$update_root/bin/repohealth"
+  local command_link="$update_root/repohealth"
+  local update_source="$update_root/source/repohealth"
+  local metadata="$update_root/latest.json"
+  local curl_calls="$update_root/curl.calls"
+  local stdout_file="$update_root/update.stdout"
+  local stderr_file="$update_root/update.stderr"
+  local bare_dir="$update_root/bare"
+  local bare_target="$bare_dir/repohealth"
+  local path_target="$update_root/path-bin/repohealth"
+  local windows_run_dir="$update_root/windows-run"
+  local windows_target="$update_root/windows/repohealth"
+  local windows_script_name='C:\repohealth'
+  local failure_bin="$update_root/failure-bin"
+  local canonical_target
+  local status=0
+
+  mkdir -p "$fakebin" "$(dirname "$target")" "$(dirname "$update_source")"
+  sed 's/^VERSION="[^"]*"/VERSION="0.1.1"/' "$CLI" >"$target"
+  sed 's/^VERSION="[^"]*"/VERSION="0.1.3"/' "$CLI" >"$update_source"
+  chmod +x "$target" "$update_source"
+  ln -s "$target" "$command_link"
+  canonical_target="$(cd -P "$(dirname "$target")" && pwd)/${target##*/}"
+  write_file "$metadata" $'{\n  "tag_name": "v0.1.3"\n}\n'
+  write_file "$curl_calls" ''
+
+  write_executable "$fakebin/curl" $'#!/usr/bin/env bash\nset -euo pipefail\nout=""\nurl=""\nwhile [ "$#" -gt 0 ]; do\n  case "$1" in\n    -o) out="$2"; shift 2 ;;\n    -*) shift ;;\n    *) url="$1"; shift ;;\n  esac\ndone\nprintf \'%s\\n\' "$url" >>"${REPOHEALTH_TEST_CURL_CALLS:?}"\ncase "$url" in\n  */latest) cp "${REPOHEALTH_TEST_METADATA:?}" "$out" ;;\n  */v0.1.3/repohealth) cp "${REPOHEALTH_TEST_SOURCE:?}" "$out" ;;\n  *) printf \'unexpected URL: %s\\n\' "$url" >&2; exit 2 ;;\nesac\n'
+
+  set +e
+  env \
+    LC_ALL=C \
+    PATH="$fakebin:$PATH" \
+    REPOHEALTH_TEST_CURL_CALLS="$curl_calls" \
+    REPOHEALTH_TEST_METADATA="$metadata" \
+    REPOHEALTH_TEST_SOURCE="$update_source" \
+    REPOHEALTH_UPDATE_API_URL="https://example.invalid/releases/latest" \
+    REPOHEALTH_UPDATE_RAW_URL="https://example.invalid/repohealth" \
+    "$command_link" update >"$stdout_file" 2>"$stderr_file"
+  status=$?
+  set -e
+
+  [ "$status" -eq 0 ] || fail "self-update failed with status $status"
+  [ ! -s "$stderr_file" ] ||
+    fail "expected self-update to avoid stderr: $(cat "$stderr_file")"
+  [ -L "$command_link" ] || fail "expected self-update to preserve the command symlink"
+  [ "$("$target" --version)" = 'repohealth 0.1.3' ] ||
+    fail "expected self-update to replace the resolved target"
+  grep -F "Updated repohealth from 0.1.1 to 0.1.3 at $canonical_target." "$stdout_file" >/dev/null ||
+    fail "expected self-update to report old version, new version, and target: $(cat "$stdout_file")"
+  grep -F 'https://example.invalid/releases/latest' "$curl_calls" >/dev/null ||
+    fail "expected self-update to request latest release metadata"
+  grep -F 'https://example.invalid/repohealth/v0.1.3/repohealth' "$curl_calls" >/dev/null ||
+    fail "expected self-update to download the tagged release"
+
+  env \
+    LC_ALL=C \
+    PATH="$fakebin:$PATH" \
+    REPOHEALTH_TEST_CURL_CALLS="$curl_calls" \
+    REPOHEALTH_TEST_METADATA="$metadata" \
+    REPOHEALTH_TEST_SOURCE="$update_source" \
+    REPOHEALTH_UPDATE_API_URL="https://example.invalid/releases/latest" \
+    REPOHEALTH_UPDATE_RAW_URL="https://example.invalid/repohealth" \
+    "$command_link" update >"$stdout_file" 2>"$stderr_file" ||
+    fail "up-to-date self-update check failed"
+  [ "$(cat "$stdout_file")" = 'repohealth 0.1.3 is already the latest release.' ] ||
+    fail "expected self-update to report an up-to-date installation"
+  [ ! -s "$stderr_file" ] ||
+    fail "expected up-to-date check to avoid stderr: $(cat "$stderr_file")"
+
+  mkdir -p "$bare_dir" "$(dirname "$path_target")"
+  sed 's/^VERSION="[^"]*"/VERSION="0.1.1"/' "$CLI" >"$bare_target"
+  sed 's/^VERSION="[^"]*"/VERSION="0.1.1"/' "$CLI" >"$path_target"
+  chmod +x "$bare_target" "$path_target"
+  write_file "$curl_calls" ''
+
+  set +e
+  (
+    cd "$bare_dir"
+    env \
+      LC_ALL=C \
+      PATH="$(dirname "$path_target"):$fakebin:$PATH" \
+      REPOHEALTH_TEST_CURL_CALLS="$curl_calls" \
+      REPOHEALTH_TEST_METADATA="$metadata" \
+      REPOHEALTH_TEST_SOURCE="$update_source" \
+      REPOHEALTH_UPDATE_API_URL="https://example.invalid/releases/latest" \
+      REPOHEALTH_UPDATE_RAW_URL="https://example.invalid/repohealth" \
+      bash repohealth update >"$stdout_file" 2>"$stderr_file"
+  )
+  status=$?
+  set -e
+
+  [ "$status" -eq 0 ] || fail "bare-path self-update failed with status $status"
+  [ "$("$bare_target" --version)" = 'repohealth 0.1.3' ] ||
+    fail "expected bash repohealth update to replace the invoked local script"
+  [ "$("$path_target" --version)" = 'repohealth 0.1.1' ] ||
+    fail "expected bash repohealth update not to replace another copy found on PATH"
+  [ ! -s "$stderr_file" ] ||
+    fail "expected bare-path self-update to avoid stderr: $(cat "$stderr_file")"
+
+  mkdir -p "$windows_run_dir" "$(dirname "$windows_target")"
+  sed 's/^VERSION="[^"]*"/VERSION="0.1.1"/' "$CLI" >"$windows_run_dir/$windows_script_name"
+  sed 's/^VERSION="[^"]*"/VERSION="0.1.1"/' "$CLI" >"$windows_target"
+  chmod +x "$windows_run_dir/$windows_script_name" "$windows_target"
+  write_executable "$fakebin/cygpath" $'#!/usr/bin/env bash\n[ "$1" = "-u" ] || exit 2\nprintf \'%s\\n\' "${REPOHEALTH_TEST_CYGPATH_TARGET:?}"\n'
+  write_file "$curl_calls" ''
+
+  set +e
+  (
+    cd "$windows_run_dir"
+    env \
+      LC_ALL=C \
+      PATH="$fakebin:$PATH" \
+      REPOHEALTH_TEST_CURL_CALLS="$curl_calls" \
+      REPOHEALTH_TEST_CYGPATH_TARGET="$windows_target" \
+      REPOHEALTH_TEST_METADATA="$metadata" \
+      REPOHEALTH_TEST_SOURCE="$update_source" \
+      REPOHEALTH_UPDATE_API_URL="https://example.invalid/releases/latest" \
+      REPOHEALTH_UPDATE_RAW_URL="https://example.invalid/repohealth" \
+      bash "$windows_script_name" update >"$stdout_file" 2>"$stderr_file"
+  )
+  status=$?
+  set -e
+
+  [ "$status" -eq 0 ] || fail "Windows-path self-update failed with status $status"
+  [ "$("$windows_target" --version)" = 'repohealth 0.1.3' ] ||
+    fail "expected self-update to normalize a Windows launcher path with cygpath"
+  [ ! -s "$stderr_file" ] ||
+    fail "expected Windows-path self-update to avoid stderr: $(cat "$stderr_file")"
+
+  mkdir -p "$failure_bin"
+  write_executable "$failure_bin/dirname" $'#!/usr/bin/env bash\nexit 1\n'
+  write_file "$curl_calls" ''
+  set +e
+  env \
+    LC_ALL=C \
+    PATH="$failure_bin:$fakebin:$PATH" \
+    REPOHEALTH_TEST_CURL_CALLS="$curl_calls" \
+    REPOHEALTH_TEST_METADATA="$metadata" \
+    REPOHEALTH_TEST_SOURCE="$update_source" \
+    REPOHEALTH_UPDATE_API_URL="https://example.invalid/releases/latest" \
+    REPOHEALTH_UPDATE_RAW_URL="https://example.invalid/repohealth" \
+    "$path_target" update >"$stdout_file" 2>"$stderr_file"
+  status=$?
+  set -e
+
+  [ "$status" -eq 1 ] || fail "expected target-resolution failure to exit 1, got $status"
+  grep -F 'Error: could not resolve update target:' "$stderr_file" >/dev/null ||
+    fail "expected target-resolution failure to explain the error"
+  [ "$(wc -l <"$curl_calls" | tr -d ' ')" -eq 1 ] ||
+    fail "expected target-resolution failure to stop before downloading the release"
+}
+
 assert_missing_dependencies_fail_early() {
   local fakebin="$TMP_ROOT/missing-deps-bin"
   local runtime_stdout="$TMP_ROOT/missing-deps-runtime.stdout"
@@ -1275,6 +1430,7 @@ main() {
   assert_status_colors_are_fixed_rgb
   assert_missing_dependencies_fail_early
   assert_posix_installer
+  assert_self_update
 
   # multi-directory: scan two separate roots
   local dir_a="$TMP_ROOT/multi-a"

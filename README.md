@@ -50,6 +50,12 @@ Requires `bash`, `find`, `awk`, and `git`. repohealth checks these at startup an
 
 If `directory` is omitted, the current directory is scanned.
 
+Update an installed copy to the latest GitHub release:
+
+```bash
+repohealth update
+```
+
 | Flag | Description |
 |------|-------------|
 | `-f`, `--filter TYPE` | show repos matching `dirty`, `uncommitted`, `unpushed`, `unpulled`, or `all` |

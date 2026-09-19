@@ -20,6 +20,8 @@ REPO_SELECTORS=()
 SCAN_ROOTS=()
 SCAN_ROOT_CANONS=()
 STATE_TMP_DIR=""
+UPDATE_METADATA_TMP=""
+UPDATE_DOWNLOAD_TMP=""
 
 HAVE_JJ=0
 FD_CMD=""
@@ -49,8 +51,12 @@ REPO_WORK_UNTRACKED_COUNT=()
 usage() {
   cat <<EOF
 Usage: $PROGRAM_NAME [options] [directory ...]
+       $PROGRAM_NAME update
 
 Scan nested Git and Jujutsu repos and report outgoing commits plus working-copy changes.
+
+Commands:
+  update                 Update repohealth to the latest release
 
 Options:
   -f, --filter TYPE     Show repos matching TYPE: dirty, uncommitted, unpushed, unpulled, all
@@ -71,6 +77,134 @@ EOF
 
 print_version() {
   printf '%s %s\n' "$PROGRAM_NAME" "$VERSION"
+}
+
+download_file() {
+  local url="$1" destination="$2"
+
+  if command_exists curl; then
+    curl -fsSL "$url" -o "$destination"
+  elif command_exists wget; then
+    wget -qO "$destination" "$url"
+  else
+    die "curl or wget is required to update repohealth"
+  fi
+}
+
+is_release_version() {
+  [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+version_is_newer() {
+  local candidate="$1" current="$2"
+  local candidate_parts current_parts i candidate_part current_part
+  local IFS='.'
+
+  candidate_parts=($candidate)
+  current_parts=($current)
+  for i in 0 1 2; do
+    candidate_part=$((10#${candidate_parts[$i]}))
+    current_part=$((10#${current_parts[$i]}))
+    if [ "$candidate_part" -gt "$current_part" ]; then
+      return 0
+    fi
+    if [ "$candidate_part" -lt "$current_part" ]; then
+      return 1
+    fi
+  done
+  return 1
+}
+
+resolve_update_target() {
+  local target="${BASH_SOURCE[0]}" link target_dir
+
+  case "$target" in
+  *\\*)
+    command_exists cygpath || die "cygpath is required to update this Windows installation"
+    target="$(cygpath -u "$target")" || die "could not resolve Windows update target: $target"
+    ;;
+  esac
+
+  case "$target" in
+  */*) ;;
+  *)
+    if [ -e "$target" ]; then
+      target="./$target"
+    else
+      target="$(command -v "$target" 2>/dev/null || true)"
+    fi
+    ;;
+  esac
+  [ -n "$target" ] || die "could not locate the installed repohealth script"
+
+  while [ -L "$target" ]; do
+    command_exists readlink || die "readlink is required to update a symlinked installation"
+    link="$(readlink "$target")" || die "could not resolve update target: $target"
+    case "$link" in
+    /*) target="$link" ;;
+    *) target="$(dirname "$target")/$link" ;;
+    esac
+  done
+
+  target_dir="$(cd -P "$(dirname "$target")" 2>/dev/null && pwd)" ||
+    die "could not resolve update target: $target"
+  printf '%s/%s\n' "$target_dir" "${target##*/}"
+}
+
+cleanup_update_files() {
+  [ -z "$UPDATE_METADATA_TMP" ] || rm -f "$UPDATE_METADATA_TMP"
+  [ -z "$UPDATE_DOWNLOAD_TMP" ] || rm -f "$UPDATE_DOWNLOAD_TMP"
+}
+
+update_repohealth() {
+  local release_api_url raw_base_url latest_tag latest_version
+  local downloaded_version target
+
+  [ "$#" -eq 0 ] || die "update does not accept arguments"
+
+  release_api_url="${REPOHEALTH_UPDATE_API_URL:-https://api.github.com/repos/frittlechasm/repohealth/releases/latest}"
+  raw_base_url="${REPOHEALTH_UPDATE_RAW_URL:-https://raw.githubusercontent.com/frittlechasm/repohealth}"
+  UPDATE_METADATA_TMP="$(mktemp "${TMPDIR:-/tmp}/repohealth-release.XXXXXX")" ||
+    die "could not create a temporary file"
+  UPDATE_DOWNLOAD_TMP=""
+  trap cleanup_update_files EXIT HUP INT TERM
+
+  download_file "$release_api_url" "$UPDATE_METADATA_TMP" ||
+    die "failed to check the latest repohealth release"
+  latest_tag="$(sed -n 's/^[[:space:]]*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' "$UPDATE_METADATA_TMP" | sed -n '1p')"
+  case "$latest_tag" in
+  v*) latest_version="${latest_tag#v}" ;;
+  *) die "latest release metadata did not contain a valid version tag" ;;
+  esac
+  is_release_version "$latest_version" ||
+    die "latest release has an unsupported version: $latest_tag"
+  is_release_version "$VERSION" || die "installed version is unsupported: $VERSION"
+
+  if [ "$latest_version" = "$VERSION" ]; then
+    printf 'repohealth %s is already the latest release.\n' "$VERSION"
+    return 0
+  fi
+  if ! version_is_newer "$latest_version" "$VERSION"; then
+    printf 'repohealth %s is newer than the latest release (%s); no update performed.\n' "$VERSION" "$latest_version"
+    return 0
+  fi
+
+  target="$(resolve_update_target)" || exit 1
+  UPDATE_DOWNLOAD_TMP="$(mktemp "$(dirname "$target")/.repohealth-update.XXXXXX")" ||
+    die "cannot write updates beside $target"
+  download_file "$raw_base_url/$latest_tag/repohealth" "$UPDATE_DOWNLOAD_TMP" ||
+    die "failed to download repohealth $latest_version"
+
+  [ "$(sed -n '1p' "$UPDATE_DOWNLOAD_TMP")" = '#!/usr/bin/env bash' ] ||
+    die "downloaded file does not look like repohealth"
+  downloaded_version="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$UPDATE_DOWNLOAD_TMP" | sed -n '1p')"
+  [ "$downloaded_version" = "$latest_version" ] ||
+    die "downloaded version does not match release $latest_tag"
+
+  chmod 755 "$UPDATE_DOWNLOAD_TMP" || die "failed to make the update executable"
+  mv -f "$UPDATE_DOWNLOAD_TMP" "$target" || die "failed to replace $target"
+  UPDATE_DOWNLOAD_TMP=""
+  printf 'Updated repohealth from %s to %s at %s.\n' "$VERSION" "$latest_version" "$target"
 }
 
 die() {
@@ -2599,6 +2733,12 @@ parse_args() {
 }
 
 main() {
+  if [ "${1:-}" = "update" ]; then
+    shift
+    update_repohealth "$@"
+    exit 0
+  fi
+
   parse_args "$@"
   trap cleanup_temp_state EXIT
   require_startup_dependencies

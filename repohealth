@@ -3,7 +3,7 @@
 set -u
 
 PROGRAM_NAME="${0##*/}"
-VERSION="0.1.2"
+VERSION="0.1.3"
 
 FILTER_MODE="changed"
 MAX_DEPTH=""

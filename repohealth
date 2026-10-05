@@ -1488,22 +1488,30 @@ EOF
   printf '%s' "$result"
 }
 
+# Print a jj query's stdout. On failure, print its first stderr line instead and
+# return 1. The query re-runs only on failure so stderr never mixes into parsed output.
+jj_query() {
+  local output
+  if output="$(jj "$@" 2>/dev/null)"; then
+    printf '%s' "$output"
+    return 0
+  fi
+  jj "$@" 2>&1 >/dev/null | awk 'NF { print; exit }'
+  return 1
+}
+
 jj_draft_revset() {
   printf 'reachable(@, mutable()) ~ ::bookmarks() ~ @'
 }
 
 collect_jj_drafts() {
   local root="$1"
-  local output
-  output="$(jj -R "$root" log -r "$(jj_draft_revset)" --no-graph -T 'change_id.short() ++ " " ++ description.first_line() ++ "\n"' 2>/dev/null || true)"
-  printf '%s' "$output"
+  jj_query -R "$root" log -r "$(jj_draft_revset)" --no-graph -T 'change_id.short() ++ " " ++ description.first_line() ++ "\n"'
 }
 
 count_jj_drafts() {
   local root="$1"
-  local output
-  output="$(jj -R "$root" log -r "$(jj_draft_revset)" --count 2>/dev/null || true)"
-  first_nonempty_line "$output"
+  jj_query -R "$root" log -r "$(jj_draft_revset)" --count
 }
 
 jj_outgoing_revset() {
@@ -1518,9 +1526,7 @@ jj_outgoing_revset() {
 count_jj_outgoing_commits() {
   local root="$1"
   local revset="$2"
-  local output
-  output="$(jj -R "$root" log -r "$revset" --count 2>/dev/null || true)"
-  first_nonempty_line "$output"
+  jj_query -R "$root" log -r "$revset" --count
 }
 
 build_jj_bookmark_breakdown() {
@@ -1614,33 +1620,50 @@ EOF
   printf '%s' "$result"
 }
 
+fail_jj_push_state() {
+  local idx="$1"
+  local root="$2"
+  local reason="$3"
+  warn "JJ push-state check failed for $root: $reason"
+  set_push_status "$idx" "push_failed" "! push check failed" "push check failed: $reason"
+}
+
+# Set the caller's draft_count, and REPO_DRAFT_DETAIL in detail mode.
+# On failure, mark the push check failed and return 1.
+load_jj_draft_count() {
+  local idx="$1"
+  local root="$2"
+  local output
+  if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
+    if ! output="$(collect_jj_drafts "$root")"; then
+      fail_jj_push_state "$idx" "$root" "$output"
+      return 1
+    fi
+    REPO_DRAFT_DETAIL[$idx]="$output"
+    draft_count="$(count_nonempty_lines "$output")"
+  else
+    if ! output="$(count_jj_drafts "$root")"; then
+      fail_jj_push_state "$idx" "$root" "$output"
+      return 1
+    fi
+    draft_count="$output"
+  fi
+}
+
 collect_jj_push_state() {
   local idx="$1"
   local root="$2"
 
-  local draft_detail="" draft_count=0
+  local draft_count=0
 
   local remote_output remote_count
-  # Keep stderr out of the parsed remote list; re-run only to capture the failure reason.
-  if ! remote_output="$(jj -R "$root" git remote list 2>/dev/null)"; then
-    local error_line
-    error_line="$(jj -R "$root" git remote list 2>&1 >/dev/null | awk 'NF { print; exit }')"
-    warn "JJ push-state check failed for $root: $error_line"
-    set_push_status "$idx" "push_failed" "! push check failed" "push check failed: $error_line"
+  if ! remote_output="$(jj_query -R "$root" git remote list)"; then
+    fail_jj_push_state "$idx" "$root" "$remote_output"
     return
   fi
   remote_count="$(count_nonempty_lines "$remote_output")"
   if [ "$remote_count" -eq 0 ] && [ -z "$REMOTE_OVERRIDE" ]; then
-    if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
-      draft_detail="$(collect_jj_drafts "$root")"
-      draft_count="$(count_nonempty_lines "$draft_detail")"
-      REPO_DRAFT_DETAIL[$idx]="$draft_detail"
-    else
-      draft_count="$(count_jj_drafts "$root")"
-    fi
-    if [ -z "$draft_count" ] || ! is_integer "$draft_count"; then
-      draft_count=0
-    fi
+    load_jj_draft_count "$idx" "$root" || return
     if [ "$draft_count" -gt 0 ]; then
       set_push_status "$idx" "draft" "~ ${draft_count} draft only" "draft commits are not pushable until bookmarked" "" "$draft_count"
     else
@@ -1687,8 +1710,7 @@ collect_jj_push_state() {
       set_push_status "$idx" "needs_description" "! ${no_desc_count} no-desc" "commits without a description cannot be pushed — run 'jj describe <id>'" "$no_desc_detail" "$no_desc_count"
       return
     fi
-    warn "JJ push-state check failed for $root: $(first_nonempty_line "$dry_run_output")"
-    set_push_status "$idx" "push_failed" "! push check failed" "push check failed: $(first_nonempty_line "$dry_run_output")"
+    fail_jj_push_state "$idx" "$root" "$(first_nonempty_line "$dry_run_output")"
     return
   fi
 
@@ -1714,8 +1736,11 @@ collect_jj_push_state() {
       }
     ')"
     outgoing_revset="$(jj_outgoing_revset "$selected_remote")"
-    outgoing_count="$(count_jj_outgoing_commits "$root" "$outgoing_revset")"
-    if [ -z "$outgoing_count" ] || ! is_integer "$outgoing_count" || [ "$outgoing_count" -eq 0 ]; then
+    if ! outgoing_count="$(count_jj_outgoing_commits "$root" "$outgoing_revset")"; then
+      fail_jj_push_state "$idx" "$root" "$outgoing_count"
+      return
+    fi
+    if [ "$outgoing_count" -eq 0 ]; then
       outgoing_count="$action_count"
     fi
     if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
@@ -1726,16 +1751,7 @@ collect_jj_push_state() {
         detail="$(build_jj_outgoing_detail "$root" "$dry_run_output")"
       fi
     fi
-    if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
-      draft_detail="$(collect_jj_drafts "$root")"
-      draft_count="$(count_nonempty_lines "$draft_detail")"
-      REPO_DRAFT_DETAIL[$idx]="$draft_detail"
-    else
-      draft_count="$(count_jj_drafts "$root")"
-    fi
-    if [ -z "$draft_count" ] || ! is_integer "$draft_count"; then
-      draft_count=0
-    fi
+    load_jj_draft_count "$idx" "$root" || return
     local bk_breakdown
     bk_breakdown="$(build_jj_bookmark_breakdown "$root" "$selected_remote")"
     local push_label="↑ ${outgoing_count} outgoing"
@@ -1763,8 +1779,11 @@ collect_jj_push_state() {
       fallback_remote="$(printf '%s\n' "$remote_output" | awk 'NR==1 { print $1 }')"
     fi
     outgoing_revset="$(jj_outgoing_revset "$fallback_remote")"
-    fallback_count="$(count_jj_outgoing_commits "$root" "$outgoing_revset")"
-    if [ -n "$fallback_count" ] && is_integer "$fallback_count" && [ "$fallback_count" -gt 0 ]; then
+    if ! fallback_count="$(count_jj_outgoing_commits "$root" "$outgoing_revset")"; then
+      fail_jj_push_state "$idx" "$root" "$fallback_count"
+      return
+    fi
+    if [ "$fallback_count" -gt 0 ]; then
       local fallback_detail=""
       if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
         fallback_detail="$(build_jj_commit_detail "$root" "$outgoing_revset")"
@@ -1782,16 +1801,7 @@ collect_jj_push_state() {
     return
   fi
 
-  if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
-    draft_detail="$(collect_jj_drafts "$root")"
-    draft_count="$(count_nonempty_lines "$draft_detail")"
-    REPO_DRAFT_DETAIL[$idx]="$draft_detail"
-  else
-    draft_count="$(count_jj_drafts "$root")"
-  fi
-  if [ -z "$draft_count" ] || ! is_integer "$draft_count"; then
-    draft_count=0
-  fi
+  load_jj_draft_count "$idx" "$root" || return
   if [ "$draft_count" -gt 0 ]; then
     set_push_status "$idx" "draft" "~ ${draft_count} draft only" "draft commits are not pushable until bookmarked" "" "$draft_count"
     return

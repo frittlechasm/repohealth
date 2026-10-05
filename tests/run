@@ -914,6 +914,67 @@ assert_jj_push_state_reports_broken_store() {
     fail "expected broken jj store to warn on stderr"
 }
 
+assert_jj_push_state_reports_failed_count_queries() {
+  local workspace="$TMP_ROOT/jj-count-fail-workspace"
+  local fakebin="$TMP_ROOT/jj-count-fail-bin"
+  local stdout_file="$TMP_ROOT/jj-count-fail.stdout"
+  local stderr_file="$TMP_ROOT/jj-count-fail.stderr"
+  local status_file="$TMP_ROOT/jj-count-fail.status"
+  local repo mode
+
+  mkdir -p "$fakebin" "$workspace/outgoing-fail/.jj" "$workspace/fallback-fail/.jj" "$workspace/draft-fail/.jj"
+
+  # Remote listing and the push dry-run succeed; every revset count fails.
+  cat >"$fakebin/jj" <<'EOF'
+#!/usr/bin/env bash
+repo_name="${2##*/}"
+shift 2
+case "$1 ${2:-}" in
+"diff --name-only")
+  exit 0
+  ;;
+"git remote")
+  printf 'origin\n'
+  exit 0
+  ;;
+"git push")
+  case "$repo_name" in
+  outgoing-fail)
+    printf 'Changes to push to origin:\n  Move bookmark main from 11111111 to 22222222\nDry-run requested, not pushing.\n'
+    ;;
+  fallback-fail)
+    printf 'Nothing changed.\nDry-run requested, not pushing.\n'
+    ;;
+  draft-fail)
+    printf 'Warning: No bookmarks found in the default push revset: remote_bookmarks(remote=origin)..@\nNothing changed.\nDry-run requested, not pushing.\n'
+    ;;
+  esac
+  exit 0
+  ;;
+"log -r")
+  printf 'Error: Concurrent working-copy operation\n' >&2
+  exit 1
+  ;;
+esac
+printf 'unexpected jj invocation: %s\n' "$*" >&2
+exit 1
+EOF
+  chmod +x "$fakebin/jj"
+
+  # Draft counts use a separate query in detail mode, so cover both modes.
+  for mode in table detail; do
+    PATH="$fakebin:$PATH" run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --output "$mode" "$workspace"
+
+    [ "$(cat "$status_file")" -eq 0 ] || fail "expected failed jj count run ($mode) to succeed"
+    [ "$(grep -c '! push check failed' "$stdout_file")" -eq 3 ] ||
+      fail "expected every repo with a failed count query to report a failed push check ($mode)"
+    for repo in outgoing-fail fallback-fail draft-fail; do
+      grep -E "JJ push-state check failed for .*/$repo: Error: Concurrent working-copy operation\$" "$stderr_file" >/dev/null ||
+        fail "expected $repo to warn about the failed count query ($mode)"
+    done
+  done
+}
+
 assert_jj_push_detail_preserves_draft_detail() {
   local workspace="$TMP_ROOT/jj-push-detail-workspace"
   local fakebin="$TMP_ROOT/jj-push-detail-bin"
@@ -1447,6 +1508,7 @@ main() {
   assert_jj_push_state_defers_draft_count
   assert_jj_push_state_reports_missing_description
   assert_jj_push_state_reports_broken_store
+  assert_jj_push_state_reports_failed_count_queries
   assert_jj_push_detail_preserves_draft_detail
   assert_repeated_short_exclude_flags "$workspace"
   assert_excluded_linked_worktree_is_silent

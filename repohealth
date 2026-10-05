@@ -1621,7 +1621,14 @@ collect_jj_push_state() {
   local draft_detail="" draft_count=0
 
   local remote_output remote_count
-  remote_output="$(jj -R "$root" git remote list 2>/dev/null || true)"
+  # Keep stderr out of the parsed remote list; re-run only to capture the failure reason.
+  if ! remote_output="$(jj -R "$root" git remote list 2>/dev/null)"; then
+    local error_line
+    error_line="$(jj -R "$root" git remote list 2>&1 >/dev/null | awk 'NF { print; exit }')"
+    warn "JJ push-state check failed for $root: $error_line"
+    set_push_status "$idx" "push_failed" "! push check failed" "push check failed: $error_line"
+    return
+  fi
   remote_count="$(count_nonempty_lines "$remote_output")"
   if [ "$remote_count" -eq 0 ] && [ -z "$REMOTE_OVERRIDE" ]; then
     if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
@@ -1949,12 +1956,13 @@ should_show_repo() {
     if is_worktree_dirty "$idx"; then
       return 0
     fi
+    # Failed checks hide the real state, so surface them instead of implying clean.
     case "${REPO_PUSH_KIND[$idx]}" in
-    outgoing | behind | diverged | draft | needs_description)
+    outgoing | behind | diverged | draft | needs_description | push_failed)
       return 0
       ;;
     esac
-    return 1
+    [ "${REPO_WORK_KIND[$idx]}" = "error" ]
     ;;
   esac
 }

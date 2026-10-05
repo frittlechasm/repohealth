@@ -102,7 +102,7 @@ notes     [git]  - up to date  |  - clean
 
 ### Filters
 
-Filters limit which repos appear in the list. Without `--filter`, repohealth shows repos with uncommitted, unpushed, or unpulled changes.
+Filters limit which repos appear in the list. Without `--filter`, repohealth shows repos with uncommitted, unpushed, or unpulled changes, plus repos whose status check failed.
 
 | Filter | Shows |
 |--------|-------|

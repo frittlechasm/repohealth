@@ -889,6 +889,31 @@ assert_jj_push_state_reports_missing_description() {
   grep -F '"a1b2c3d4e5f6"' "$json_stdout_file" >/dev/null || fail "expected JSON detail to include second undescribed commit id"
 }
 
+assert_jj_push_state_reports_broken_store() {
+  local workspace="$TMP_ROOT/jj-broken-workspace"
+  local fakebin="$TMP_ROOT/jj-broken-bin"
+  local stdout_file="$TMP_ROOT/jj-broken.stdout"
+  local stderr_file="$TMP_ROOT/jj-broken.stderr"
+  local status_file="$TMP_ROOT/jj-broken.status"
+
+  mkdir -p "$workspace" "$fakebin"
+  init_git_repo "$workspace/broken"
+  write_file "$workspace/broken/file.txt" $'hello\n'
+  commit_all "$workspace/broken" "Initial commit" "2024-01-05T00:00:00 +0000"
+  mkdir -p "$workspace/broken/.jj"
+
+  # Mirrors a JJ store whose working-copy commit was pruned from Git.
+  write_executable "$fakebin/jj" $'#!/usr/bin/env bash\nprintf \'Internal error: Failed to check out a commit\\nCaused by:\\n1: Current working-copy commit not found\\n\' >&2\nexit 255\n'
+
+  PATH="$fakebin:$PATH" run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 "$workspace"
+
+  [ "$(cat "$status_file")" -eq 0 ] || fail "expected broken jj store run to succeed"
+  grep -E 'broken +\[jj\].*! push check failed.*\|  - clean *$' "$stdout_file" >/dev/null ||
+    fail "expected broken jj store to report a failed push check instead of no remote"
+  grep -E 'JJ push-state check failed for .*/broken: Internal error: Failed to check out a commit$' "$stderr_file" >/dev/null ||
+    fail "expected broken jj store to warn on stderr"
+}
+
 assert_jj_push_detail_preserves_draft_detail() {
   local workspace="$TMP_ROOT/jj-push-detail-workspace"
   local fakebin="$TMP_ROOT/jj-push-detail-bin"
@@ -1421,6 +1446,7 @@ main() {
   assert_colocated_repo_without_jj_uses_git_work_state
   assert_jj_push_state_defers_draft_count
   assert_jj_push_state_reports_missing_description
+  assert_jj_push_state_reports_broken_store
   assert_jj_push_detail_preserves_draft_detail
   assert_repeated_short_exclude_flags "$workspace"
   assert_excluded_linked_worktree_is_silent

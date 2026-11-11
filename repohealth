@@ -960,7 +960,7 @@ truncate_status_middle() {
   local text="$1"
   local max_width="$2"
   local _var="$3"
-  local arrow="" rest="" rest_width width
+  local arrow rest rest_width width
 
   visual_width "$text" width
   if [ "$width" -le "$max_width" ]; then
@@ -968,22 +968,23 @@ truncate_status_middle() {
     return
   fi
 
-  case "$text" in
-  $'\342\206\221'* | $'\342\206\223'* | $'\342\206\225'*)
-    arrow="${text:0:3}"
-    rest="${text:3}"
-    rest_width=$((max_width - 1))
-    if [ "$rest_width" -le 0 ]; then
-      printf -v "$_var" '%s' "$arrow"
-    else
-      truncate_middle "$rest" "$rest_width" rest
-      printf -v "$_var" '%s%s' "$arrow" "$rest"
-    fi
-    ;;
-  *)
-    truncate_middle "$text" "$max_width" "$_var"
-    ;;
-  esac
+  # Match the arrow as a string. Offsets like ${text:0:3} count bytes under LC_ALL=C
+  # but characters under UTF-8 locales, which widened truncated cells by 2.
+  for arrow in $'\342\206\221' $'\342\206\223' $'\342\206\225'; do
+    case "$text" in
+    "$arrow"*)
+      rest_width=$((max_width - 1))
+      if [ "$rest_width" -le 0 ]; then
+        printf -v "$_var" '%s' "$arrow"
+      else
+        truncate_middle "${text#"$arrow"}" "$rest_width" rest
+        printf -v "$_var" '%s%s' "$arrow" "$rest"
+      fi
+      return
+      ;;
+    esac
+  done
+  truncate_middle "$text" "$max_width" "$_var"
 }
 
 repeat_char() {

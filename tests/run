@@ -1126,6 +1126,52 @@ assert_table_status_columns_align() {
   ' "$stdout_file" || fail "expected table separator columns to align under LC_ALL=C"
 }
 
+# Print the first installed UTF-8 locale. macOS may lack C.UTF-8; minimal Linux images may lack en_US.UTF-8.
+find_utf8_locale() {
+  local locale_name
+  for locale_name in C.UTF-8 en_US.UTF-8; do
+    # The arrow is one character only when the locale really decodes UTF-8.
+    if LC_ALL="$locale_name" bash -c '[ "${#1}" -eq 1 ]' _ $'\342\206\221' 2>/dev/null; then
+      printf '%s' "$locale_name"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# String slicing counts characters under UTF-8 but bytes under C, so arrow statuses
+# must keep their width when truncated in both locales.
+assert_table_truncated_arrow_aligns_in_utf8() {
+  local workspace="$1"
+  local stdout_file="$TMP_ROOT/table-utf8.stdout"
+  local stderr_file="$TMP_ROOT/table-utf8.stderr"
+  local utf8_locale
+
+  utf8_locale="$(find_utf8_locale)" || fail "expected a UTF-8 locale (C.UTF-8 or en_US.UTF-8) for the table-utf8 test"
+
+  # COLUMNS=45 shrinks the push column to 9 cells without wrapping repo names.
+  env LC_ALL="$utf8_locale" TZ=UTC COLUMNS=45 NO_COLOR=1 \
+    "$CLI" --jobs 1 --filter all "$workspace" >"$stdout_file" 2>"$stderr_file" ||
+    fail "expected table-utf8 run to succeed"
+  [ ! -s "$stderr_file" ] || fail "expected table-utf8 run to avoid stderr"
+  grep -F '↑ 1...ing  |' "$stdout_file" >/dev/null ||
+    fail "expected table-utf8 output to truncate the outgoing status to the push column width"
+  awk '
+    {
+      line = $0
+      gsub(/↑|↓|↕/, "x", line)
+    }
+    index(line, "|") {
+      col = index(line, "|")
+      if (!expected) {
+        expected = col
+      } else if (col != expected) {
+        exit 1
+      }
+    }
+  ' "$stdout_file" || fail "expected table separator columns to align under $utf8_locale"
+}
+
 assert_table_shrinks_work_before_push() {
   local workspace="$TMP_ROOT/table-status-width-workspace"
   local remotes="$TMP_ROOT/table-status-width-remotes"
@@ -1549,6 +1595,7 @@ main() {
   assert_excluded_linked_worktree_is_silent
   assert_table_shows_default_repo_name
   assert_table_status_columns_align "$workspace"
+  assert_table_truncated_arrow_aligns_in_utf8 "$workspace"
   assert_table_shrinks_work_before_push
   assert_status_colors_are_fixed_rgb
   assert_missing_dependencies_fail_early

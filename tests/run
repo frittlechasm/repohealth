@@ -885,8 +885,8 @@ assert_jj_push_state_reports_missing_description() {
   [ ! -s "$json_stderr_file" ] || fail "json jj no-desc run wrote unexpected stderr"
   grep -F '"kind": "needs_description"' "$json_stdout_file" >/dev/null || fail "expected JSON output to expose needs_description kind"
   grep -F '"text": "! 2 no-desc"' "$json_stdout_file" >/dev/null || fail "expected JSON output to expose '! 2 no-desc' text"
-  grep -F '"fc96ce19d495"' "$json_stdout_file" >/dev/null || fail "expected JSON detail to include first undescribed commit id"
-  grep -F '"a1b2c3d4e5f6"' "$json_stdout_file" >/dev/null || fail "expected JSON detail to include second undescribed commit id"
+  grep -F '"fc96ce19d495"' "$json_stdout_file" >/dev/null || fail "expected JSON detail to include first undescribed commit id" # pragma: allowlist secret
+  grep -F '"a1b2c3d4e5f6"' "$json_stdout_file" >/dev/null || fail "expected JSON detail to include second undescribed commit id" # pragma: allowlist secret
 }
 
 assert_jj_push_state_reports_broken_store() {

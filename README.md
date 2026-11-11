@@ -83,7 +83,7 @@ myapp              git  ↑ 3 outgoing  |  * 2 modified, 1 new
 notes              git  - up to date  |  - clean
 ```
 
-The width comes from `COLUMNS`, or 80 when it is unset.
+The width comes from `COLUMNS`, then from the terminal when output goes to one, and 80 otherwise.
 When the table is wider, repo names move to their own line instead of cutting statuses short.
 JSON and detail output keep the full status text, such as `↑ 2 outgoing (feat/zsh-prompt: 2)`.
 

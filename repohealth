@@ -2830,6 +2830,12 @@ main() {
     { [ -t 1 ] || [ "${REPOHEALTH_FORCE_COLOR:-}" = "1" ]; }; then
     ENABLE_COLOR=1
   fi
+  # Shells keep COLUMNS unexported, so ask the terminal when stdout is one. Mute stderr
+  # before opening /dev/tty so a missing terminal fails quietly; terminal_columns then uses 80.
+  if [ -z "${COLUMNS:-}" ] && [ -t 1 ]; then
+    COLUMNS="$(stty size 2>/dev/null </dev/tty || true)"
+    COLUMNS="${COLUMNS##* }"
+  fi
   FANCY_MODE=0
   if [ "$OUTPUT" = "fancy-detail" ]; then
     FANCY_MODE=1

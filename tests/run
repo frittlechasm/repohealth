@@ -878,9 +878,8 @@ assert_jj_push_state_defers_draft_count() {
     REPOHEALTH_TEST_JJ_CALLS_FILE="$calls_file" \
     "$CLI" --jobs 1 --filter all "$workspace" >"$color_stdout_file" 2>/dev/null ||
     fail "expected forced-color jj push-state run to succeed"
-  grep -F "  "$'\033[38;2;140;140;140m'"main " "$color_stdout_file" | grep -F '↑ 1' |
-    grep -vF $'\033[38;2;89;223;230m' >/dev/null ||
-    fail "expected the jj bookmark row to be grey, including its count"
+  grep -E '^  '$'\033''\[38;2;140;140;140mmain +jj +↑ 1 +\|'$'\033''\[0m$' "$color_stdout_file" >/dev/null ||
+    fail "expected the jj bookmark row to be grey from its name through the separator"
 }
 
 assert_jj_push_state_reports_missing_description() {
@@ -1199,6 +1198,37 @@ find_utf8_locale() {
     fi
   done
   return 1
+}
+
+# Bash printf pads by bytes while ${#name} counts characters under UTF-8, so a non-ASCII
+# name padded with %-*s ends short and pulls its row out of line. "ø" has no decomposed
+# form, so filesystems store the name as written.
+assert_table_pads_non_ascii_names() {
+  local workspace="$TMP_ROOT/table-non-ascii-workspace"
+  local stdout_file="$TMP_ROOT/table-non-ascii.stdout"
+  local utf8_locale line prefix expected=""
+
+  utf8_locale="$(find_utf8_locale)" || fail "expected a UTF-8 locale (C.UTF-8 or en_US.UTF-8) for the non-ASCII name test"
+  init_git_repo "$workspace/ørsted-notes"
+  write_file "$workspace/ørsted-notes/file.txt" $'hello\n'
+  commit_all "$workspace/ørsted-notes" "Initial commit" "2024-01-13T00:00:00 +0000"
+  init_git_repo "$workspace/a-longer-ascii-name"
+  write_file "$workspace/a-longer-ascii-name/file.txt" $'hello\n'
+  commit_all "$workspace/a-longer-ascii-name" "Initial commit" "2024-01-13T00:00:00 +0000"
+
+  env LC_ALL="$utf8_locale" TZ=UTC COLUMNS=80 NO_COLOR=1 \
+    "$CLI" --jobs 1 --filter all "$workspace" >"$stdout_file" 2>/dev/null ||
+    fail "expected non-ASCII name run to succeed"
+  grep -F 'ørsted-notes' "$stdout_file" >/dev/null || fail "expected the non-ASCII repo to be listed"
+  # Count characters before "|" in a UTF-8 locale, so any awk or grep build gives the same answer.
+  local LC_ALL="$utf8_locale"
+  while IFS= read -r line; do
+    case "$line" in *"|"*) ;; *) continue ;; esac
+    prefix="${line%%|*}"
+    [ -n "$expected" ] || expected="${#prefix}"
+    [ "${#prefix}" -eq "$expected" ] ||
+      fail "expected non-ASCII repo names to keep the | column aligned under $utf8_locale"
+  done <"$stdout_file"
 }
 
 # String slicing counts characters under UTF-8 but bytes under C, so a cut arrow status
@@ -1667,6 +1697,7 @@ main() {
   assert_excluded_linked_worktree_is_silent
   assert_table_shows_default_repo_name
   assert_table_status_columns_align "$workspace"
+  assert_table_pads_non_ascii_names
   assert_minimal_cut_arrow_keeps_width
   assert_table_wraps_before_cutting_statuses
   assert_status_colors_are_fixed_rgb

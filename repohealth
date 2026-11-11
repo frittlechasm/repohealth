@@ -2184,6 +2184,7 @@ EOF
 
   # Each row is: name, VCS, REMOTE, "|", LOCAL. Bookmark rows indent the name by 2,
   # leave LOCAL empty, and are grey throughout so the repo row above them stands out.
+  # Pad names by ${#name}, not printf %-*s: printf counts bytes, ${#name} counts characters.
   local padded_name padded_type padded_push
   for i in "${_shown_indices[@]}"; do
     name="${_DISP_NAMES[$i]}"
@@ -2194,7 +2195,7 @@ EOF
     if [ "$wrap_paths" -eq 1 ]; then
       printf '%s\n  %s  %s  %s|%s  %s\n' "$name" "$padded_type" "$padded_push" "$grey" "$reset" "$local_text"
     else
-      printf -v padded_name '%-*s' "$name_width" "$name"
+      printf -v padded_name '%s%*s' "$name" $((name_width - ${#name})) ''
       printf '%s  %s  %s  %s|%s  %s\n' "$padded_name" "$padded_type" "$padded_push" "$grey" "$reset" "$local_text"
     fi
 
@@ -2204,7 +2205,7 @@ EOF
       if [ "$wrap_paths" -eq 1 ]; then
         printf '  %s%s%s\n  %s%s  %s  |%s\n' "$grey" "$bookmark" "$reset" "$grey" "$padded_type" "$padded_push" "$reset"
       else
-        printf -v padded_name '%-*s' $((name_width - 2)) "$bookmark"
+        printf -v padded_name '%s%*s' "$bookmark" $((name_width - 2 - ${#bookmark})) ''
         printf '  %s%s  %s  %s  |%s\n' "$grey" "$padded_name" "$padded_type" "$padded_push" "$reset"
       fi
     done <<EOF

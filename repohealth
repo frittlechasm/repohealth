@@ -38,6 +38,8 @@ REPO_PUSH_NOTE=()
 REPO_PUSH_DETAIL=()
 REPO_PUSH_PRIMARY_COUNT=()
 REPO_PUSH_SECONDARY_COUNT=()
+# JJ "count bookmark" lines for the default view's bookmark rows.
+REPO_PUSH_BOOKMARKS=()
 
 REPO_WORK_KIND=()
 REPO_WORK_PLAIN=()
@@ -703,6 +705,7 @@ init_repo_slot() {
   REPO_PUSH_DETAIL+=("")
   REPO_PUSH_PRIMARY_COUNT+=(0)
   REPO_PUSH_SECONDARY_COUNT+=(0)
+  REPO_PUSH_BOOKMARKS+=("")
   REPO_WORK_KIND+=("")
   REPO_WORK_PLAIN+=("")
   REPO_WORK_NOTE+=("")
@@ -861,6 +864,7 @@ set_push_status() {
   REPO_PUSH_DETAIL[$idx]="$detail"
   REPO_PUSH_PRIMARY_COUNT[$idx]="$primary_count"
   REPO_PUSH_SECONDARY_COUNT[$idx]="$secondary_count"
+  REPO_PUSH_BOOKMARKS[$idx]=""
 }
 
 set_work_status() {
@@ -1543,7 +1547,7 @@ count_jj_outgoing_commits() {
 build_jj_bookmark_breakdown() {
   local root="$1"
   local remote="$2"
-  local tip_output bookmark_names name count result=""
+  local tip_output bookmark_names name count result="" nl=$'\n'
 
   tip_output="$(jj -R "$root" log -r "bookmarks() ~ remote_bookmarks(remote=$remote)" \
     --no-graph -T 'bookmarks.join("\n") ++ "\n"' 2>/dev/null || true)"
@@ -1557,11 +1561,7 @@ build_jj_bookmark_breakdown() {
     count="$(jj -R "$root" log -r "::\"$name\" ~ ::remote_bookmarks(remote=$remote)" \
       --count 2>/dev/null || echo 0)"
     if [ -n "$count" ] && is_integer "$count" && [ "$count" -gt 0 ]; then
-      if [ -n "$result" ]; then
-        result="$result, $name: $count"
-      else
-        result="$name: $count"
-      fi
+      result="${result:+$result$nl}$count $name"
     fi
   done <<< "$bookmark_names"
 
@@ -1629,6 +1629,24 @@ $dry_run_output
 EOF
 
   printf '%s' "$result"
+}
+
+# Set a JJ outgoing status from "count bookmark" lines. The label keeps the breakdown
+# for JSON and detail output; the table shows one row per bookmark instead.
+set_jj_outgoing_status() {
+  local idx="$1" count="$2" breakdown="$3" draft_count="$4" note="$5" detail="$6"
+  local joined="" n name
+  while read -r n name; do
+    [ -n "$name" ] || continue
+    joined="${joined:+$joined, }$name: $n"
+  done <<EOF
+$breakdown
+EOF
+  local label="↑ ${count} outgoing"
+  [ -n "$joined" ] && label="$label ($joined)"
+  [ "$draft_count" -gt 0 ] && label="$label (+${draft_count} draft)"
+  set_push_status "$idx" "outgoing" "$label" "$note" "$detail" "$count" "$draft_count"
+  REPO_PUSH_BOOKMARKS[$idx]="$breakdown"
 }
 
 fail_jj_push_state() {
@@ -1763,16 +1781,8 @@ collect_jj_push_state() {
       fi
     fi
     load_jj_draft_count "$idx" "$root" || return
-    local bk_breakdown
-    bk_breakdown="$(build_jj_bookmark_breakdown "$root" "$selected_remote")"
-    local push_label="↑ ${outgoing_count} outgoing"
-    if [ -n "$bk_breakdown" ]; then
-      push_label="$push_label ($bk_breakdown)"
-    fi
-    if [ "$draft_count" -gt 0 ]; then
-      push_label="$push_label (+${draft_count} draft)"
-    fi
-    set_push_status "$idx" "outgoing" "$push_label" "" "$detail" "$outgoing_count" "$draft_count"
+    set_jj_outgoing_status "$idx" "$outgoing_count" \
+      "$(build_jj_bookmark_breakdown "$root" "$selected_remote")" "$draft_count" "" "$detail"
     return
   fi
 
@@ -1799,13 +1809,9 @@ collect_jj_push_state() {
       if [ "$COLLECT_DETAIL_DATA" -eq 1 ]; then
         fallback_detail="$(build_jj_commit_detail "$root" "$outgoing_revset")"
       fi
-      local fallback_bk_breakdown
-      fallback_bk_breakdown="$(build_jj_bookmark_breakdown "$root" "$fallback_remote")"
-      local fallback_label="↑ ${fallback_count} outgoing"
-      if [ -n "$fallback_bk_breakdown" ]; then
-        fallback_label="$fallback_label ($fallback_bk_breakdown)"
-      fi
-      set_push_status "$idx" "outgoing" "$fallback_label" "bookmarks ahead of remote but not in default push revset" "$fallback_detail" "$fallback_count"
+      set_jj_outgoing_status "$idx" "$fallback_count" \
+        "$(build_jj_bookmark_breakdown "$root" "$fallback_remote")" 0 \
+        "bookmarks ahead of remote but not in default push revset" "$fallback_detail"
       return
     fi
     set_push_status "$idx" "clean" "- up to date"
@@ -1862,6 +1868,7 @@ write_repo_state() {
   printf 'REPO_PUSH_DETAIL[%s]=%q\n' "$idx" "${REPO_PUSH_DETAIL[$idx]}"
   printf 'REPO_PUSH_PRIMARY_COUNT[%s]=%q\n' "$idx" "${REPO_PUSH_PRIMARY_COUNT[$idx]}"
   printf 'REPO_PUSH_SECONDARY_COUNT[%s]=%q\n' "$idx" "${REPO_PUSH_SECONDARY_COUNT[$idx]}"
+  printf 'REPO_PUSH_BOOKMARKS[%s]=%q\n' "$idx" "${REPO_PUSH_BOOKMARKS[$idx]}"
   printf 'REPO_WORK_KIND[%s]=%q\n' "$idx" "${REPO_WORK_KIND[$idx]}"
   printf 'REPO_WORK_PLAIN[%s]=%q\n' "$idx" "${REPO_WORK_PLAIN[$idx]}"
   printf 'REPO_WORK_NOTE[%s]=%q\n' "$idx" "${REPO_WORK_NOTE[$idx]}"
@@ -2099,98 +2106,110 @@ print_default_view() {
   local -a _shown_indices=()
   local -a _DISP_NAMES=()
   collect_shown_repos || return
-  local -a cached_paths=()
-  local i path_plain type_plain push_plain work_plain status_width
-  local max_path=0 max_type=0 max_push=0 max_work=0
+  local -a push_texts=() local_texts=() local_kinds=()
+  local i name n bookmark push_text local_text local_kind width drafts
+  # Columns start at their header label widths. Bookmark rows indent their name by 2.
+  local name_width=4 type_width=3 push_width=6 local_width=5
   for i in "${_shown_indices[@]}"; do
-    path_plain="${_DISP_NAMES[$i]}"
-    cached_paths[$i]="$path_plain"
-    type_plain="[${REPO_TYPES[$i]}]"
-    push_plain="${REPO_PUSH_PLAIN[$i]}"
-    work_plain="${REPO_WORK_PLAIN[$i]}"
-    [ "${#path_plain}" -gt "$max_path" ] && max_path="${#path_plain}"
-    [ "${#type_plain}" -gt "$max_type" ] && max_type="${#type_plain}"
-    visual_width "$push_plain" status_width
-    [ "$status_width" -gt "$max_push" ] && max_push="$status_width"
-    visual_width "$work_plain" status_width
-    [ "$status_width" -gt "$max_work" ] && max_work="$status_width"
+    name="${_DISP_NAMES[$i]}"
+    [ "${#name}" -gt "$name_width" ] && name_width="${#name}"
+    [ "${#REPO_TYPES[$i]}" -gt "$type_width" ] && type_width="${#REPO_TYPES[$i]}"
+    # Outgoing rows show only the count; JJ bookmarks get their own rows below.
+    push_text="${REPO_PUSH_PLAIN[$i]}"
+    [ "${REPO_PUSH_KIND[$i]}" = "outgoing" ] && push_text="↑ ${REPO_PUSH_PRIMARY_COUNT[$i]} outgoing"
+    push_texts[$i]="$push_text"
+    visual_width "$push_text" width
+    [ "$width" -gt "$push_width" ] && push_width="$width"
+    if [ -n "${REPO_PUSH_BOOKMARKS[$i]}" ]; then
+      while read -r n bookmark; do
+        [ $((${#bookmark} + 2)) -gt "$name_width" ] && name_width=$((${#bookmark} + 2))
+        [ $((${#n} + 2)) -gt "$push_width" ] && push_width=$((${#n} + 2))
+      done <<EOF
+${REPO_PUSH_BOOKMARKS[$i]}
+EOF
+    fi
+
+    # LOCAL lists working-copy changes plus drafts next to outgoing commits. Draft-only
+    # repos keep "~ N draft only" in REMOTE, which explains why --filter unpushed shows them.
+    local_kind="${REPO_WORK_KIND[$i]}"
+    local_text="${REPO_WORK_PLAIN[$i]}"
+    if [ "$local_kind" = "clean" ] || [ "$local_kind" = "changes" ]; then
+      drafts=0
+      [ "${REPO_PUSH_KIND[$i]}" = "outgoing" ] && drafts="${REPO_PUSH_SECONDARY_COUNT[$i]:-0}"
+      local_text=""
+      [ "${REPO_WORK_MODIFIED_COUNT[$i]:-0}" -gt 0 ] && local_text="${REPO_WORK_MODIFIED_COUNT[$i]} modified"
+      [ "${REPO_WORK_UNTRACKED_COUNT[$i]:-0}" -gt 0 ] &&
+        local_text="${local_text:+$local_text, }${REPO_WORK_UNTRACKED_COUNT[$i]} new"
+      [ "$drafts" -gt 0 ] && local_text="${local_text:+$local_text, }$drafts draft"
+      if [ -n "$local_text" ]; then
+        local_text="* $local_text"
+        local_kind="changes"
+      else
+        local_text="- clean"
+        local_kind="clean"
+      fi
+    fi
+    local_texts[$i]="$local_text"
+    local_kinds[$i]="$local_kind"
+    [ "${#local_text}" -gt "$local_width" ] && local_width="${#local_text}"
   done
 
-  local columns path_width push_width work_width total_width reduce shrink wrap_paths
-  local min_push_width=8 min_work_width=8
+  # Status labels are short, so a table that does not fit wraps names instead of cutting statuses.
+  local columns wrap_paths=0 rule_width
   columns="$(terminal_columns)"
-  path_width="$max_path"
-  push_width="$max_push"
-  work_width="$max_work"
-  wrap_paths=0
-  total_width=$((path_width + 2 + max_type + 2 + push_width + 5 + work_width))
-  if [ "$PATH_STYLE_EXPLICIT" -eq 0 ] && [ "$total_width" -gt "$columns" ]; then
-    reduce=$((total_width - columns))
-    shrink=$((work_width - min_work_width))
-    if [ "$reduce" -gt 0 ] && [ "$shrink" -gt 0 ]; then
-      [ "$shrink" -gt "$reduce" ] && shrink="$reduce"
-      work_width=$((work_width - shrink))
-      reduce=$((reduce - shrink))
-    fi
-    shrink=$((push_width - min_push_width))
-    if [ "$reduce" -gt 0 ] && [ "$shrink" -gt 0 ]; then
-      [ "$shrink" -gt "$reduce" ] && shrink="$reduce"
-      push_width=$((push_width - shrink))
-      reduce=$((reduce - shrink))
-    fi
-    total_width=$((path_width + 2 + max_type + 2 + push_width + 5 + work_width))
-    if [ "$total_width" -gt "$columns" ]; then
-      wrap_paths=1
-      push_width="$max_push"
-      work_width="$max_work"
-    fi
+  rule_width=$((name_width + 2 + type_width + 2 + push_width + 5 + local_width))
+  if [ "$PATH_STYLE_EXPLICIT" -eq 0 ] && [ "$rule_width" -gt "$columns" ]; then
+    wrap_paths=1
+    rule_width="$columns"
   fi
 
-  local padded_path padded_type padded_push padded_work
+  # Secondary text (header, rule, separators, bookmark rows) uses a fixed grey because
+  # terminal "dim" is too faint to see in some terminals.
+  local grey="" reset=""
+  if [ "$ENABLE_COLOR" -eq 1 ]; then
+    grey=$'\033[38;2;140;140;140m'
+    reset=$'\033[0m'
+  fi
+
+  local line rule
+  printf -v rule '%*s' "$rule_width" ''
+  rule="${rule// /·}"
+  if [ "$wrap_paths" -eq 1 ]; then
+    printf '%sREPO%s\n' "$grey" "$reset"
+    printf -v line '  %-*s  %-*s     %s' "$type_width" VCS "$push_width" REMOTE LOCAL
+  else
+    printf -v line '%-*s  %-*s  %-*s     %s' "$name_width" REPO "$type_width" VCS "$push_width" REMOTE LOCAL
+  fi
+  printf '%s%s%s\n%s%s%s\n' "$grey" "$line" "$reset" "$grey" "$rule" "$reset"
+
+  # Each row is: name, VCS, REMOTE, "|", LOCAL. Bookmark rows indent the name by 2,
+  # leave LOCAL empty, and are grey throughout so the repo row above them stands out.
+  local padded_name padded_type padded_push
   for i in "${_shown_indices[@]}"; do
-    if [ "$wrap_paths" -eq 1 ]; then
-      path_plain="${cached_paths[$i]}"
-    else
-      truncate_middle "${cached_paths[$i]}" "$path_width" path_plain
-    fi
-    type_plain="[${REPO_TYPES[$i]}]"
-    truncate_status_middle "${REPO_PUSH_PLAIN[$i]}" "$push_width" push_plain
-    truncate_status_middle "${REPO_WORK_PLAIN[$i]}" "$work_width" work_plain
-    printf -v padded_path "%-${path_width}s" "$path_plain"
-    printf -v padded_type "%-${max_type}s" "$type_plain"
-    pad_to_visual "$push_plain" "$push_width" padded_push
-    pad_to_visual "$work_plain" "$work_width" padded_work
+    name="${_DISP_NAMES[$i]}"
+    printf -v padded_type '%-*s' "$type_width" "${REPO_TYPES[$i]}"
+    pad_to_visual "${push_texts[$i]}" "$push_width" padded_push
     colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push" padded_push
-    colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work" padded_work
-    if [ "$FANCY_MODE" -eq 1 ] && [ "$ENABLE_COLOR" -eq 1 ]; then
-      if [ "$wrap_paths" -eq 1 ]; then
-        printf '\033[2m%s\033[0m\n  \033[2m%s\033[0m  %s  \033[2m|\033[0m  %s\n' \
-          "$path_plain" \
-          "$padded_type" \
-          "$padded_push" \
-          "$padded_work"
-      else
-        printf '\033[2m%s\033[0m  \033[2m%s\033[0m  %s  \033[2m|\033[0m  %s\n' \
-          "$padded_path" \
-          "$padded_type" \
-          "$padded_push" \
-          "$padded_work"
-      fi
+    colorize_status "${local_kinds[$i]}" "${local_texts[$i]}" local_text
+    if [ "$wrap_paths" -eq 1 ]; then
+      printf '%s\n  %s  %s  %s|%s  %s\n' "$name" "$padded_type" "$padded_push" "$grey" "$reset" "$local_text"
     else
-      if [ "$wrap_paths" -eq 1 ]; then
-        printf '%s\n  %s  %s  |  %s\n' \
-          "$path_plain" \
-          "$padded_type" \
-          "$padded_push" \
-          "$padded_work"
-      else
-        printf '%s  %s  %s  |  %s\n' \
-          "$padded_path" \
-          "$padded_type" \
-          "$padded_push" \
-          "$padded_work"
-      fi
+      printf -v padded_name '%-*s' "$name_width" "$name"
+      printf '%s  %s  %s  %s|%s  %s\n' "$padded_name" "$padded_type" "$padded_push" "$grey" "$reset" "$local_text"
     fi
+
+    [ -n "${REPO_PUSH_BOOKMARKS[$i]}" ] || continue
+    while read -r n bookmark; do
+      pad_to_visual "↑ $n" "$push_width" padded_push
+      if [ "$wrap_paths" -eq 1 ]; then
+        printf '  %s%s%s\n  %s%s  %s  |%s\n' "$grey" "$bookmark" "$reset" "$grey" "$padded_type" "$padded_push" "$reset"
+      else
+        printf -v padded_name '%-*s' $((name_width - 2)) "$bookmark"
+        printf '  %s%s  %s  %s  |%s\n' "$grey" "$padded_name" "$padded_type" "$padded_push" "$reset"
+      fi
+    done <<EOF
+${REPO_PUSH_BOOKMARKS[$i]}
+EOF
   done
 }
 

@@ -281,7 +281,7 @@ assert_filter_modes() {
   run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --filter unpushed "$workspace"
   [ "$(cat "$status_file")" -eq 0 ] || fail "expected --filter unpushed to succeed"
   [ ! -s "$stderr_file" ] || fail "expected --filter unpushed to avoid stderr"
-  grep -E '^outgoing-clean +\[git\] +↑ 1 outgoing +\| +- clean *$' "$stdout_file" >/dev/null ||
+  grep -E '^outgoing-clean +git +↑ 1 outgoing +\| +- clean$' "$stdout_file" >/dev/null ||
     fail "expected --filter unpushed to show clean outgoing repos"
   if grep -F 'behind-clean' "$stdout_file" >/dev/null || grep -F 'dirty-only' "$stdout_file" >/dev/null || grep -F 'clean-only' "$stdout_file" >/dev/null; then
     fail "expected --filter unpushed to hide behind-only, dirty-only, and clean repos"
@@ -289,7 +289,7 @@ assert_filter_modes() {
 
   run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --filter unpulled "$workspace"
   [ "$(cat "$status_file")" -eq 0 ] || fail "expected --filter unpulled to succeed"
-  grep -E '^behind-clean +\[git\] +↓ 1 behind +\| +- clean *$' "$stdout_file" >/dev/null ||
+  grep -E '^behind-clean +git +↓ 1 behind +\| +- clean$' "$stdout_file" >/dev/null ||
     fail "expected --filter unpulled to show clean behind repos"
   if grep -F 'outgoing-clean' "$stdout_file" >/dev/null || grep -F 'dirty-only' "$stdout_file" >/dev/null || grep -F 'clean-only' "$stdout_file" >/dev/null; then
     fail "expected --filter unpulled to hide outgoing-only, dirty-only, and clean repos"
@@ -297,7 +297,7 @@ assert_filter_modes() {
 
   run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --filter dirty "$workspace"
   [ "$(cat "$status_file")" -eq 0 ] || fail "expected --filter dirty to succeed"
-  grep -E '^dirty-only +\[git\].*\| +\* 1 modified *$' "$stdout_file" >/dev/null ||
+  grep -E '^dirty-only +git .* \* 1 modified$' "$stdout_file" >/dev/null ||
     fail "expected --filter dirty to show working-copy changes"
   if grep -F 'outgoing-clean' "$stdout_file" >/dev/null || grep -F 'behind-clean' "$stdout_file" >/dev/null || grep -F 'clean-only' "$stdout_file" >/dev/null; then
     fail "expected --filter dirty to hide clean push-state changes and clean repos"
@@ -398,7 +398,7 @@ assert_detail_alias_matches_output_precedence() {
   [ ! -s "$alias_table_stderr" ] || fail "expected --detail --output table to avoid stderr"
   [ ! -s "$explicit_table_stderr" ] || fail "expected --output detail --output table to avoid stderr"
   cmp -s "$alias_table_stdout" "$explicit_table_stdout" || fail "expected table output to match for alias and explicit detail forms"
-  grep -E '^ahead-dirty +\[git\] +↑ 1 outgoing' "$alias_table_stdout" >/dev/null ||
+  grep -E '^ahead-dirty +git +↑ 1 outgoing' "$alias_table_stdout" >/dev/null ||
     fail "expected later --output table to win over --detail"
   if grep -F '   ↑ Outgoing' "$alias_table_stdout" >/dev/null 2>&1; then
     fail "expected table output to avoid detail sections"
@@ -485,12 +485,12 @@ assert_path_display() {
   local table_status="$TMP_ROOT/path-table.status"
   run_cli "$table_stdout" "$table_stderr" "$table_status" --jobs 1 --filter all "$workspace"
   [ ! -s "$table_stderr" ] || fail "expected table path-display to avoid stderr"
-  grep -E '^nested-repo +\[git\]' "$table_stdout" >/dev/null || fail "expected non-clashing repo to show basename"
+  grep -E '^nested-repo +git ' "$table_stdout" >/dev/null || fail "expected non-clashing repo to show basename"
   if grep -F 'parent/child/nested-repo' "$table_stdout" >/dev/null 2>&1; then
     fail "expected non-clashing repo to avoid relative path"
   fi
-  grep -E '^apps/service +\[git\]' "$table_stdout" >/dev/null || fail "expected clashing repos to disambiguate with relative paths"
-  grep -E '^tools/service +\[git\]' "$table_stdout" >/dev/null || fail "expected clashing repos to disambiguate with relative paths"
+  grep -E '^apps/service +git ' "$table_stdout" >/dev/null || fail "expected clashing repos to disambiguate with relative paths"
+  grep -E '^tools/service +git ' "$table_stdout" >/dev/null || fail "expected clashing repos to disambiguate with relative paths"
 
   # Default minimal view: same per-repo logic
   local minimal_stdout="$TMP_ROOT/path-minimal.stdout"
@@ -638,9 +638,9 @@ assert_json_paths_stable() {
 
   run_cli "$root_rel_stdout" "$root_rel_stderr" "$root_rel_status" --jobs 1 --filter all --paths relative "$root_dir_a" "$root_dir_b"
   [ ! -s "$root_rel_stderr" ] || fail "expected multi-root --paths relative run to avoid stderr"
-  grep -E '^json-root-a +\[git\]' "$root_rel_stdout" >/dev/null ||
+  grep -E '^json-root-a +git ' "$root_rel_stdout" >/dev/null ||
     fail "expected exact-root repo under --paths relative to use the scan-root basename in multi-root output"
-  grep -E '^json-root-b +\[git\]' "$root_rel_stdout" >/dev/null ||
+  grep -E '^json-root-b +git ' "$root_rel_stdout" >/dev/null ||
     fail "expected exact-root repo under --paths relative to use the scan-root basename in multi-root output"
   if grep -F "$root_dir_a" "$root_rel_stdout" >/dev/null 2>&1 || grep -F "$root_dir_b" "$root_rel_stdout" >/dev/null 2>&1; then
     fail "expected multi-root --paths relative output to avoid absolute paths for exact-root repos"
@@ -681,7 +681,7 @@ assert_jj_discovery_prefers_jj() {
 
   [ "$status" -eq 0 ] || fail "jj discovery preference run failed with status $status"
   [ ! -s "$stderr_file" ] || fail "jj discovery preference run wrote unexpected stderr"
-  grep -F 'mixed  [jj]' "$stdout_file" >/dev/null || fail "expected colocated .git/.jj repo to be reported as [jj]"
+  grep -E '^mixed +jj ' "$stdout_file" >/dev/null || fail "expected colocated .git/.jj repo to be reported as jj"
   if grep -F ' root' "$calls_file" >/dev/null 2>&1; then
     fail "expected jj discovery to avoid jj root probe"
   fi
@@ -724,9 +724,9 @@ assert_jj_work_state_uses_diff_only() {
   [ "$status" -eq 0 ] || fail "jj work-state run failed with status $status"
   [ ! -s "$stderr_file" ] || fail "jj work-state run wrote unexpected stderr"
 
-  grep -E 'jj-clean +\[jj\].*\|  - clean *$' "$stdout_file" >/dev/null || fail "expected clean jj repo to remain clean"
-  grep -E 'jj-dirty +\[jj\].*\|  \* 2 modified *$' "$stdout_file" >/dev/null || fail "expected dirty jj repo to report two modified files"
-  grep -E 'mixed +\[jj\].*\|  \* 1 modified *$' "$stdout_file" >/dev/null || fail "expected mixed repo to use git work-state fallback"
+  grep -E '^jj-clean +jj .* - clean$' "$stdout_file" >/dev/null || fail "expected clean jj repo to remain clean"
+  grep -E '^jj-dirty +jj .* \* 2 modified$' "$stdout_file" >/dev/null || fail "expected dirty jj repo to report two modified files"
+  grep -E '^mixed +jj .* \* 1 modified$' "$stdout_file" >/dev/null || fail "expected mixed repo to use git work-state fallback"
 
   if grep -F ' status' "$jj_calls_file" >/dev/null 2>&1; then
     fail "expected jj work-state collection to avoid jj status"
@@ -771,9 +771,9 @@ assert_colocated_repo_without_jj_uses_git_work_state() {
 
   [ "$status" -eq 0 ] || fail "colocated missing-jj run failed with status $status"
   [ ! -s "$stderr_file" ] || fail "colocated missing-jj run wrote unexpected stderr"
-  grep -E 'mixed +\[jj\].*!! jj unavailable.*\|  \* 1 modified, 1 untracked *$' "$stdout_file" >/dev/null ||
+  grep -E '^mixed +jj +!! jj unavailable +\| +\* 1 modified, 1 new$' "$stdout_file" >/dev/null ||
     fail "expected colocated repo without jj to report Git worktree changes"
-  grep -E 'pure-jj +\[jj\].*!! jj unavailable.*\|  !! jj unavailable *$' "$stdout_file" >/dev/null ||
+  grep -E '^pure-jj +jj +!! jj unavailable +\| +!! jj unavailable$' "$stdout_file" >/dev/null ||
     fail "expected pure jj repo without jj to keep both states unavailable"
 }
 
@@ -787,6 +787,8 @@ assert_jj_push_state_defers_draft_count() {
   local minimal_stderr_file="$TMP_ROOT/jj-push-minimal.stderr"
   local minimal_status_file="$TMP_ROOT/jj-push-minimal.status"
   local calls_file="$TMP_ROOT/jj-push.calls"
+  local json_stdout_file="$TMP_ROOT/jj-push-json.stdout"
+  local color_stdout_file="$TMP_ROOT/jj-push-color.stdout"
 
   mkdir -p "$workspace" "$fakebin"
   mkdir -p \
@@ -816,10 +818,13 @@ assert_jj_push_state_defers_draft_count() {
   [ "$status" -eq 0 ] || fail "jj push-state run failed with status $status"
   [ ! -s "$stderr_file" ] || fail "jj push-state run wrote unexpected stderr"
 
-  grep -E 'clean-remote +\[jj\].*- up to date.*\|  - clean *$' "$stdout_file" >/dev/null || fail "expected clean remote jj repo to remain up to date"
-  grep -E 'draft-only +\[jj\].*~ 2 draft only.*\|  - clean *$' "$stdout_file" >/dev/null || fail "expected draft-only jj repo to report draft-only state"
-  grep -E 'outgoing +\[jj\].*↑ 1 outgoing \(main: 1\) \(\+2 draft\).*\|  - clean *$' "$stdout_file" >/dev/null || fail "expected outgoing jj repo to include bookmark breakdown and draft suffix"
-  grep -E 'no-remote +\[jj\].*\? no remote.*\|  - clean *$' "$stdout_file" >/dev/null || fail "expected no-remote jj repo to report missing remote"
+  grep -E '^clean-remote +jj +- up to date +\| +- clean$' "$stdout_file" >/dev/null || fail "expected clean remote jj repo to remain up to date"
+  grep -E '^draft-only +jj +~ 2 draft only +\| +- clean$' "$stdout_file" >/dev/null || fail "expected draft-only jj repo to report draft-only state"
+  grep -A1 -E '^outgoing +jj +↑ 1 outgoing +\| +\* 2 draft$' "$stdout_file" |
+    grep -E '^  main +jj +↑ 1 +\|$' >/dev/null ||
+    fail "expected outgoing jj repo to show drafts in LOCAL and its bookmark as its own row"
+  table_columns_align "$stdout_file" || fail "expected jj bookmark rows to line up with the table"
+  grep -E '^no-remote +jj +\? no remote +\| +- clean$' "$stdout_file" >/dev/null || fail "expected no-remote jj repo to report missing remote"
 
   if grep -F 'clean-remote log -r reachable(@, mutable()) ~ ::bookmarks() ~ @' "$calls_file" >/dev/null 2>&1; then
     fail "expected clean JJ repo with remotes to skip draft counting"
@@ -850,6 +855,32 @@ assert_jj_push_state_defers_draft_count() {
   grep -E '^draft-only +j +~2 D +\- *$' "$minimal_stdout_file" >/dev/null || fail "expected draft-only JJ repo to show draft count in minimal output"
   grep -E '^outgoing +j +↑1 O \+2 D +\- *$' "$minimal_stdout_file" >/dev/null || fail "expected outgoing JJ repo to include draft suffix in minimal output"
   grep -E '^no-remote +j +\? +\- *$' "$minimal_stdout_file" >/dev/null || fail "expected no-remote JJ repo to remain a question state in minimal output"
+
+  # JSON keeps the bookmark breakdown that the table shows as bookmark rows.
+  env \
+    LC_ALL=C \
+    TZ=UTC \
+    NO_COLOR=1 \
+    PATH="$fakebin:$PATH" \
+    REPOHEALTH_TEST_JJ_CALLS_FILE="$calls_file" \
+    "$CLI" --jobs 1 --filter all --output json "$workspace" >"$json_stdout_file" 2>/dev/null ||
+    fail "expected JSON jj push-state run to succeed"
+  grep -F '"text": "↑ 1 outgoing (main: 1) (+2 draft)"' "$json_stdout_file" >/dev/null ||
+    fail "expected JSON to keep the bookmark breakdown and draft suffix"
+
+  # Bookmark rows are grey throughout, so their counts do not compete with the repo total.
+  env -u NO_COLOR \
+    LC_ALL=C \
+    TZ=UTC \
+    COLUMNS=80 \
+    REPOHEALTH_FORCE_COLOR=1 \
+    PATH="$fakebin:$PATH" \
+    REPOHEALTH_TEST_JJ_CALLS_FILE="$calls_file" \
+    "$CLI" --jobs 1 --filter all "$workspace" >"$color_stdout_file" 2>/dev/null ||
+    fail "expected forced-color jj push-state run to succeed"
+  grep -F "  "$'\033[38;2;140;140;140m'"main " "$color_stdout_file" | grep -F '↑ 1' |
+    grep -vF $'\033[38;2;89;223;230m' >/dev/null ||
+    fail "expected the jj bookmark row to be grey, including its count"
 }
 
 assert_jj_push_state_reports_missing_description() {
@@ -885,7 +916,7 @@ assert_jj_push_state_reports_missing_description() {
 
   [ "$status" -eq 0 ] || fail "jj no-desc push-state run failed with status $status"
   [ ! -s "$stderr_file" ] || fail "jj no-desc push-state run wrote unexpected stderr"
-  grep -E 'no-desc +\[jj\].*! 2 no-desc' "$stdout_file" >/dev/null || fail "expected no-desc JJ repo to report '! N no-desc' push status"
+  grep -E '^no-desc +jj +! 2 no-desc' "$stdout_file" >/dev/null || fail "expected no-desc JJ repo to report '! N no-desc' push status"
 
   set +e
   env \
@@ -942,7 +973,7 @@ assert_jj_push_state_reports_broken_store() {
   PATH="$fakebin:$PATH" run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 "$workspace"
 
   [ "$(cat "$status_file")" -eq 0 ] || fail "expected broken jj store run to succeed"
-  grep -E 'broken +\[jj\].*! push check failed.*\|  - clean *$' "$stdout_file" >/dev/null ||
+  grep -E '^broken +jj +! push check failed +\| +- clean$' "$stdout_file" >/dev/null ||
     fail "expected broken jj store to report a failed push check instead of no remote"
   grep -E 'JJ push-state check failed for .*/broken: Internal error: Failed to check out a commit$' "$stderr_file" >/dev/null ||
     fail "expected broken jj store to warn on stderr"
@@ -1091,39 +1122,70 @@ assert_table_shows_default_repo_name() {
   [ "$(cat "$status_file")" -eq 0 ] || fail "expected table-width run to succeed"
   [ ! -s "$stderr_file" ] || fail "expected table-width run to avoid stderr"
   grep -F "$repo_name" "$stdout_file" >/dev/null || fail "expected table-width output to show the full repo name"
-  grep -E '^  \[git\] +\? no remote +\| +- clean *$' "$stdout_file" >/dev/null ||
+  grep -E '^  git  \? no remote +\| +- clean$' "$stdout_file" >/dev/null ||
     fail "expected table-width output to keep status columns consistently spaced"
-  if grep -E '^really-long-repository-name.*\.\.\..*\[git\]' "$stdout_file" >/dev/null; then
+  if grep -E '^really-long-repository-name.*\.\.\.' "$stdout_file" >/dev/null; then
     fail "expected table-width output to avoid truncating the default repo name"
   fi
-  awk 'length($0) > 80 { exit 1 }' "$stdout_file" ||
-    fail "expected table-width output to stay within COLUMNS=80"
+  assert_fits_width "$stdout_file" 80 "table-width"
 }
 
+# Fail unless every line of FILE fits in WIDTH cells. Table glyphs are folded to one byte
+# first, so awk measures display cells under any locale.
+assert_fits_width() {
+  local file="$1"
+  local width="$2"
+  local label="$3"
+  awk -v max="$width" '
+    {
+      line = $0
+      gsub(/↑|↓|↕|·/, "x", line)
+      if (length(line) > max) exit 1
+    }
+  ' "$file" || fail "expected $label output to fit in $width columns"
+}
+
+# Succeed when every row, bookmark rows included, starts its REMOTE cell under REMOTE,
+# keeps "|" in one column, and starts any LOCAL cell under LOCAL. Only for unwrapped tables.
+table_columns_align() {
+  awk '
+    {
+      line = $0
+      gsub(/↑|↓|↕|·/, "x", line)
+    }
+    index(line, "REMOTE") {
+      remote = index(line, "REMOTE")
+      work = index(line, "LOCAL")
+      next
+    }
+    line == "" { exit }
+    line ~ /^x+$/ || !remote { next }
+    {
+      if (substr(line, remote - 2, 2) != "  " || substr(line, remote, 1) == " ") bad = 1
+      if (substr(line, work - 3, 1) != "|") bad = 1
+      if (length(line) >= work && (substr(line, work - 2, 2) != "  " || substr(line, work, 1) == " ")) bad = 1
+    }
+    END { exit bad }
+  ' "$1"
+}
+
+# The table must line up under both byte-counting and character-counting locales.
 assert_table_status_columns_align() {
   local workspace="$1"
   local stdout_file="$TMP_ROOT/table-align.stdout"
   local stderr_file="$TMP_ROOT/table-align.stderr"
-  local status_file="$TMP_ROOT/table-align.status"
+  local utf8_locale locale_name
 
-  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --filter all "$workspace"
-
-  [ "$(cat "$status_file")" -eq 0 ] || fail "expected table-align run to succeed"
-  [ ! -s "$stderr_file" ] || fail "expected table-align run to avoid stderr"
-  awk '
-    {
-      line = $0
-      gsub(/↑|↓|↕/, "x", line)
-    }
-    index(line, "|") {
-      col = index(line, "|")
-      if (!expected) {
-        expected = col
-      } else if (col != expected) {
-        exit 1
-      }
-    }
-  ' "$stdout_file" || fail "expected table separator columns to align under LC_ALL=C"
+  utf8_locale="$(find_utf8_locale)" || fail "expected a UTF-8 locale (C.UTF-8 or en_US.UTF-8) for the table-align test"
+  for locale_name in C "$utf8_locale"; do
+    env LC_ALL="$locale_name" TZ=UTC COLUMNS=80 NO_COLOR=1 \
+      "$CLI" --jobs 1 --filter all "$workspace" >"$stdout_file" 2>"$stderr_file" ||
+      fail "expected table-align run to succeed under $locale_name"
+    [ ! -s "$stderr_file" ] || fail "expected table-align run to avoid stderr under $locale_name"
+    grep -E '^ahead-dirty +git +↑ 1 outgoing +\| +\* 1 modified, 1 new$' "$stdout_file" >/dev/null ||
+      fail "expected the table to list modified and new files on one row under $locale_name"
+    table_columns_align "$stdout_file" || fail "expected table columns to align under $locale_name"
+  done
 }
 
 # Print the first installed UTF-8 locale. macOS may lack C.UTF-8; minimal Linux images may lack en_US.UTF-8.
@@ -1139,40 +1201,46 @@ find_utf8_locale() {
   return 1
 }
 
-# String slicing counts characters under UTF-8 but bytes under C, so arrow statuses
-# must keep their width when truncated in both locales.
-assert_table_truncated_arrow_aligns_in_utf8() {
-  local workspace="$1"
-  local stdout_file="$TMP_ROOT/table-utf8.stdout"
-  local stderr_file="$TMP_ROOT/table-utf8.stderr"
-  local utf8_locale
+# String slicing counts characters under UTF-8 but bytes under C, so a cut arrow status
+# must keep its width in both locales. The minimal view is the one that still cuts statuses.
+assert_minimal_cut_arrow_keeps_width() {
+  local workspace="$TMP_ROOT/minimal-cut-workspace"
+  local remotes="$TMP_ROOT/minimal-cut-remotes"
+  local repo="$workspace/diverged-repository-name-1"
+  local stdout_file="$TMP_ROOT/minimal-cut.stdout"
+  local stderr_file="$TMP_ROOT/minimal-cut.stderr"
+  local utf8_locale locale_name
 
-  utf8_locale="$(find_utf8_locale)" || fail "expected a UTF-8 locale (C.UTF-8 or en_US.UTF-8) for the table-utf8 test"
+  utf8_locale="$(find_utf8_locale)" || fail "expected a UTF-8 locale (C.UTF-8 or en_US.UTF-8) for the minimal-cut test"
 
-  # COLUMNS=45 shrinks the push column to 9 cells without wrapping repo names.
-  env LC_ALL="$utf8_locale" TZ=UTC COLUMNS=45 NO_COLOR=1 \
-    "$CLI" --jobs 1 --filter all "$workspace" >"$stdout_file" 2>"$stderr_file" ||
-    fail "expected table-utf8 run to succeed"
-  [ ! -s "$stderr_file" ] || fail "expected table-utf8 run to avoid stderr"
-  grep -F '↑ 1...ing  |' "$stdout_file" >/dev/null ||
-    fail "expected table-utf8 output to truncate the outgoing status to the push column width"
-  awk '
-    {
-      line = $0
-      gsub(/↑|↓|↕/, "x", line)
-    }
-    index(line, "|") {
-      col = index(line, "|")
-      if (!expected) {
-        expected = col
-      } else if (col != expected) {
-        exit 1
-      }
-    }
-  ' "$stdout_file" || fail "expected table separator columns to align under $utf8_locale"
+  # Push a commit, drop it locally, and commit again: 1 ahead and 1 behind.
+  init_bare_repo "$remotes/diverged.git"
+  init_git_repo "$repo"
+  write_file "$repo/file.txt" $'base\n'
+  commit_all "$repo" "Initial commit" "2024-01-10T00:00:00 +0000"
+  git -C "$repo" remote add origin "$remotes/diverged.git"
+  git -C "$repo" push -u origin main >/dev/null 2>&1
+  write_file "$repo/file.txt" $'remote\n'
+  commit_all "$repo" "Remote commit" "2024-01-11T00:00:00 +0000"
+  git -C "$repo" push >/dev/null 2>&1
+  git -C "$repo" reset -q --hard HEAD~1
+  write_file "$repo/local.txt" $'local\n'
+  commit_all "$repo" "Local commit" "2024-01-12T00:00:00 +0000"
+
+  for locale_name in C "$utf8_locale"; do
+    # COLUMNS=40 cuts the 9-cell "↕1 O /1 B" push cell to 6 cells without wrapping the name.
+    env LC_ALL="$locale_name" TZ=UTC COLUMNS=40 NO_COLOR=1 \
+      "$CLI" --jobs 1 --filter all --output minimal "$workspace" >"$stdout_file" 2>"$stderr_file" ||
+      fail "expected minimal-cut run to succeed under $locale_name"
+    [ ! -s "$stderr_file" ] || fail "expected minimal-cut run to avoid stderr under $locale_name"
+    grep -F 'diverged-repository-name-1  g  ↕1...B' "$stdout_file" >/dev/null ||
+      fail "expected the diverged status to be cut to 6 cells under $locale_name"
+    assert_fits_width "$stdout_file" 40 "minimal-cut ($locale_name)"
+  done
 }
 
-assert_table_shrinks_work_before_push() {
+# Status labels are short, so a table that does not fit wraps names instead of cutting statuses.
+assert_table_wraps_before_cutting_statuses() {
   local workspace="$TMP_ROOT/table-status-width-workspace"
   local remotes="$TMP_ROOT/table-status-width-remotes"
   local clean_repo="$workspace/miniorange-iam-2020-pratishxx"
@@ -1207,23 +1275,27 @@ assert_table_shrinks_work_before_push() {
 
   [ "$(cat "$status_file")" -eq 0 ] || fail "expected table-status-width run to succeed"
   [ ! -s "$stderr_file" ] || fail "expected table-status-width run to avoid stderr"
-  grep -F -- '- up to date' "$stdout_file" >/dev/null ||
-    fail "expected table-status-width output to keep push status untruncated"
-  if grep -F -- '- up...date' "$stdout_file" >/dev/null; then
-    fail "expected table-status-width output to shrink work status before push status"
+  grep -E '^miniorange-iam-2020-pratishxx +git +- up to date +\| +- clean$' "$stdout_file" >/dev/null ||
+    fail "expected table-status-width output to fit on one line per repo at COLUMNS=80"
+  grep -E '^unified-ai-dash +git +\? no remote +\| +\* 109 modified, 46 new$' "$stdout_file" >/dev/null ||
+    fail "expected table-status-width output to list all local changes on one row"
+  table_columns_align "$stdout_file" || fail "expected table-status-width columns to align"
+  assert_fits_width "$stdout_file" 80 "table-status-width"
+
+  set +e
+  env LC_ALL=C TZ=UTC COLUMNS=50 NO_COLOR=1 "$CLI" --jobs 1 --filter all "$workspace" >"$stdout_file" 2>"$stderr_file"
+  printf '%s\n' "$?" >"$status_file"
+  set -e
+
+  [ "$(cat "$status_file")" -eq 0 ] || fail "expected narrow table-status-width run to succeed"
+  grep -E '^miniorange-iam-2020-pratishxx$' "$stdout_file" >/dev/null ||
+    fail "expected narrow table-status-width output to wrap repo names"
+  grep -E '^  git  \? no remote +\| +\* 109 modified, 46 new$' "$stdout_file" >/dev/null ||
+    fail "expected narrow table-status-width output to keep statuses whole"
+  if grep -F '...' "$stdout_file" >/dev/null; then
+    fail "expected narrow table-status-width output to wrap instead of cutting statuses"
   fi
-  awk '
-    index($0, "|") {
-      col = index($0, "|")
-      if (!expected) {
-        expected = col
-      } else if (col != expected) {
-        exit 1
-      }
-    }
-  ' "$stdout_file" || fail "expected table-status-width separators to align"
-  awk 'length($0) > 80 { exit 1 }' "$stdout_file" ||
-    fail "expected table-status-width output to stay within COLUMNS=80"
+  assert_fits_width "$stdout_file" 50 "narrow table-status-width"
 }
 
 assert_status_colors_are_fixed_rgb() {
@@ -1260,8 +1332,8 @@ assert_status_colors_are_fixed_rgb() {
 
   [ "$(cat "$plain_status")" -eq 0 ] || fail "expected --no-color forced-color run to succeed"
   [ ! -s "$plain_stderr" ] || fail "expected --no-color forced-color run to avoid stderr"
-  if grep -F "$green" "$plain_stdout" >/dev/null 2>&1; then
-    fail "expected --no-color to suppress fixed RGB colors"
+  if grep -F $'\033' "$plain_stdout" >/dev/null 2>&1; then
+    fail "expected --no-color output to contain no escape codes"
   fi
 }
 
@@ -1595,8 +1667,8 @@ main() {
   assert_excluded_linked_worktree_is_silent
   assert_table_shows_default_repo_name
   assert_table_status_columns_align "$workspace"
-  assert_table_truncated_arrow_aligns_in_utf8 "$workspace"
-  assert_table_shrinks_work_before_push
+  assert_minimal_cut_arrow_keeps_width
+  assert_table_wraps_before_cutting_statuses
   assert_status_colors_are_fixed_rgb
   assert_missing_dependencies_fail_early
   assert_posix_installer

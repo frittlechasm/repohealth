@@ -71,13 +71,21 @@ repohealth update
 
 ## Output
 
-Each row shows push state on the left and working-copy state on the right:
+Each repo gets one row: push state under `REMOTE`, working-copy state under `LOCAL`.
+Each Jujutsu bookmark with outgoing commits gets its own indented grey row below its repo:
 
 ```
-myapp     [git]  ↑ 3 outgoing  |  * 2 modified, 1 untracked
-dotfiles  [jj]   ~ 2 draft     |  - clean
-notes     [git]  - up to date  |  - clean
+REPO               VCS  REMOTE           LOCAL
+····························································
+dotfiles           jj   ↑ 2 outgoing  |  - clean
+  feat/zsh-prompt  jj   ↑ 2           |
+myapp              git  ↑ 3 outgoing  |  * 2 modified, 1 new
+notes              git  - up to date  |  - clean
 ```
+
+The width comes from `COLUMNS`, or 80 when it is unset.
+When the table is wider, repo names move to their own line instead of cutting statuses short.
+JSON and detail output keep the full status text, such as `↑ 2 outgoing (feat/zsh-prompt: 2)`.
 
 ### Push Statuses
 
@@ -85,6 +93,7 @@ notes     [git]  - up to date  |  - clean
 |--------|---------|
 | `- up to date` | local branch matches the remote |
 | `↑ N outgoing` | local commits are ready to push |
+| `↑ N` | on a Jujutsu bookmark row: the outgoing commits on that bookmark |
 | `↓ N behind` | remote has commits not present locally |
 | `↕ A ahead, B behind` | local and remote both have unique commits |
 | `~ N draft only` | Jujutsu repo has draft changes but no Git push is needed |
@@ -93,12 +102,19 @@ notes     [git]  - up to date  |  - clean
 
 ### Work Statuses
 
-| Status | Meaning |
-|--------|---------|
+`LOCAL` lists local work on one line, for example `* 7 modified, 2 new, 1 draft`.
+Drafts appear here next to outgoing commits; a JJ repo with only drafts shows `~ N draft only` under `REMOTE`.
+
+| Part | Meaning |
+|------|---------|
 | `- clean` | no working-copy changes |
-| `* N modified` | tracked files have local changes |
-| `* N untracked` | untracked files are present |
-| `* M modified, U untracked` | tracked and untracked changes are both present |
+| `N modified` | tracked files are changed, staged, deleted, or renamed |
+| `N new` | untracked files: new files Git does not track yet; ignored files do not count |
+| `N draft` | Jujutsu commits that are not on a bookmark yet, so they cannot be pushed |
+
+Jujutsu tracks new files automatically, so JJ repos without a `.git` directory report them as modified.
+Colocated repos read the working copy through Git, so their new files show as `new`.
+JSON and detail output call new files `untracked`.
 
 ### Filters
 
@@ -116,7 +132,7 @@ Filters limit which repos appear in the list. Without `--filter`, repohealth sho
 
 | Output | Shows |
 |--------|-------|
-| `table` | one row per repo with push and work status |
+| `table` | one row per repo with push and work status, plus a row per JJ bookmark with outgoing commits |
 | `minimal` | compact repo names and statuses for quick scans |
 | `detail` | table output plus per-commit stat details |
 | `fancy-detail` | detailed output with richer terminal formatting |

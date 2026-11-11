@@ -488,7 +488,7 @@ canonicalize_dir() {
 
 relative_path() {
   local path="$1"
-  local i root
+  local i root name
   for ((i = 0; i < ${#SCAN_ROOT_CANONS[@]}; i++)); do
     root="${SCAN_ROOT_CANONS[$i]}"
     case "$path" in
@@ -497,7 +497,8 @@ relative_path() {
         printf '.'
         return
       fi
-      basename_path "$root"
+      basename_path "$root" name
+      printf '%s' "$name"
       return
       ;;
     "$root"/*)
@@ -539,20 +540,23 @@ path_is_excluded() {
 
 basename_path() {
   local path="$1"
+  local _var="$2"
   local base="${path%/}"
   if [ -z "$base" ]; then
-    printf '/'
+    printf -v "$_var" '/'
   else
-    printf '%s' "${base##*/}"
+    printf -v "$_var" '%s' "${base##*/}"
   fi
 }
 
 render_path_style() {
   local path="$1"
   local style="$2"
+  local name
   case "$style" in
   name)
-    basename_path "$path"
+    basename_path "$path" name
+    printf '%s' "$name"
     ;;
   full)
     printf '%s' "$path"
@@ -609,24 +613,25 @@ default_parallel_jobs() {
 
 status_color() {
   local kind="$1"
+  local _var="$2"
   case "$kind" in
   clean)
-    printf '\033[38;2;126;231;135m'
+    printf -v "$_var" '\033[38;2;126;231;135m'
     ;;
   outgoing)
-    printf '\033[38;2;89;223;230m'
+    printf -v "$_var" '\033[38;2;89;223;230m'
     ;;
   changes | draft | behind | diverged | needs_description)
-    printf '\033[38;2;255;209;102m'
+    printf -v "$_var" '\033[38;2;255;209;102m'
     ;;
   question)
-    printf '\033[2m'
+    printf -v "$_var" '\033[2m'
     ;;
   push_failed | error | unavailable)
-    printf '\033[38;2;255;107;107m'
+    printf -v "$_var" '\033[38;2;255;107;107m'
     ;;
   *)
-    printf ''
+    printf -v "$_var" '%s' ''
     ;;
   esac
 }
@@ -634,16 +639,17 @@ status_color() {
 colorize_status() {
   local kind="$1"
   local text="$2"
+  local _var="$3"
   local color
   if [ "$ENABLE_COLOR" -ne 1 ]; then
-    printf '%s' "$text"
+    printf -v "$_var" '%s' "$text"
     return
   fi
-  color="$(status_color "$kind")"
+  status_color "$kind" color
   if [ -z "$color" ]; then
-    printf '%s' "$text"
+    printf -v "$_var" '%s' "$text"
   else
-    printf '%b%s%b' "$color" "$text" '\033[0m'
+    printf -v "$_var" '%b%s%b' "$color" "$text" '\033[0m'
   fi
 }
 
@@ -886,7 +892,7 @@ repo_matches_selectors() {
 
   [ "${#REPO_SELECTORS[@]}" -gt 0 ] || return 0
 
-  name="$(basename_path "${REPO_ROOTS[$idx]}")"
+  basename_path "${REPO_ROOTS[$idx]}" name
   rel="$(relative_path "${REPO_ROOTS[$idx]}")"
   full="${REPO_ROOTS[$idx]}"
 
@@ -929,16 +935,17 @@ terminal_columns() {
 truncate_middle() {
   local text="$1"
   local max_width="$2"
+  local _var="$3"
   local text_length left_width right_width right_start
 
   text_length=${#text}
   if [ "$text_length" -le "$max_width" ]; then
-    printf '%s' "$text"
+    printf -v "$_var" '%s' "$text"
     return
   fi
 
   if [ "$max_width" -le 3 ]; then
-    printf '%s' "${text:0:max_width}"
+    printf -v "$_var" '%s' "${text:0:max_width}"
     return
   fi
 
@@ -946,16 +953,18 @@ truncate_middle() {
   right_width=$((max_width - 3 - left_width))
   right_start=$((text_length - right_width))
 
-  printf '%s...%s' "${text:0:left_width}" "${text:right_start}"
+  printf -v "$_var" '%s...%s' "${text:0:left_width}" "${text:right_start}"
 }
 
 truncate_status_middle() {
   local text="$1"
   local max_width="$2"
-  local arrow="" rest="" rest_width
+  local _var="$3"
+  local arrow="" rest="" rest_width width
 
-  if [ "$(visual_width "$text")" -le "$max_width" ]; then
-    printf '%s' "$text"
+  visual_width "$text" width
+  if [ "$width" -le "$max_width" ]; then
+    printf -v "$_var" '%s' "$text"
     return
   fi
 
@@ -965,13 +974,14 @@ truncate_status_middle() {
     rest="${text:3}"
     rest_width=$((max_width - 1))
     if [ "$rest_width" -le 0 ]; then
-      printf '%s' "$arrow"
+      printf -v "$_var" '%s' "$arrow"
     else
-      printf '%s%s' "$arrow" "$(truncate_middle "$rest" "$rest_width")"
+      truncate_middle "$rest" "$rest_width" rest
+      printf -v "$_var" '%s%s' "$arrow" "$rest"
     fi
     ;;
   *)
-    truncate_middle "$text" "$max_width"
+    truncate_middle "$text" "$max_width" "$_var"
     ;;
   esac
 }
@@ -1129,7 +1139,7 @@ EOF
   local esc=$'\033'
   local total_fill empty_fill add_str del_str base_path
   for ((i = 0; i < count; i++)); do
-    display_path="$(truncate_middle "${paths[$i]}" "$path_width")"
+    truncate_middle "${paths[$i]}" "$path_width" display_path
     if [ "${is_binary[$i]}" -eq 1 ]; then
       printf -v line "%-${path_width}s | Bin" "$display_path"
     else
@@ -1977,15 +1987,15 @@ should_show_repo() {
   esac
 }
 
-# Return the display width for status text. Keep this independent of the
-# process locale because some integrated terminals launch shells with LC_ALL=C.
+# Store the display width of status text STR in RESULT_VAR. Keep this independent of
+# the process locale because some integrated terminals launch shells with LC_ALL=C.
 visual_width() {
-  local _str="$1"
+  local _str="$1" _var="$2"
   _str="${_str//$'\342\206\221'/x}" # ↑
   _str="${_str//$'\342\206\223'/x}" # ↓
   _str="${_str//$'\342\206\225'/x}" # ↕
   local LC_ALL=C
-  printf '%s' "${#_str}"
+  printf -v "$_var" '%s' "${#_str}"
 }
 
 # Pad STR to visual width TARGET, storing result in RESULT_VAR.
@@ -1994,10 +2004,36 @@ visual_width() {
 pad_to_visual() {
   local _str="$1" _target="$2" _var="$3"
   local _width _pad
-  _width="$(visual_width "$_str")"
+  visual_width "$_str" _width
   _pad=$((_target - _width))
   [ "$_pad" -lt 0 ] && _pad=0
   printf -v "$_var" '%s%*s' "$_str" "$_pad" ''
+}
+
+# Read INDEX<TAB>VALUE lines and print each INDEX whose VALUE appears more than once.
+# Bash 3.2 has no associative arrays; awk keeps the check linear.
+duplicate_indices() {
+  LC_ALL=C awk '{
+    tab = index($0, "\t")
+    idx[NR] = substr($0, 1, tab - 1)
+    val[NR] = substr($0, tab + 1)
+    count[val[NR]]++
+  }
+  END {
+    for (n = 1; n <= NR; n++) {
+      if (count[val[n]] > 1) {
+        print idx[n]
+      }
+    }
+  }'
+}
+
+# Print INDEX<TAB>KEY for duplicate_indices. json_escape keeps KEY on one line, so a newline
+# in a repo path cannot forge a record whose index Bash would evaluate as a subscript.
+print_key_record() {
+  local key
+  json_escape key "$2"
+  printf '%s\t%s\n' "$1" "$key"
 }
 
 # Populate _shown_indices and _DISP_NAMES for the active view.
@@ -2025,46 +2061,35 @@ collect_shown_repos() {
     return
   fi
 
-  local j rcl
-  local -a _bn=() _clash=() _rp=()
+  local idx name
+  local -a _bn=() _clash=() _rp=() _rp_clash=()
 
   for i in "${_shown_indices[@]}"; do
-    _bn[$i]="$(basename_path "${REPO_ROOTS[$i]}")"
+    basename_path "${REPO_ROOTS[$i]}" name
+    _bn[$i]="$name"
   done
+  while read -r idx; do
+    _clash[$idx]=1
+  done < <(for i in "${_shown_indices[@]}"; do print_key_record "$i" "${_bn[$i]}"; done | duplicate_indices)
 
   for i in "${_shown_indices[@]}"; do
-    _clash[$i]=0
-    for j in "${_shown_indices[@]}"; do
-      [ "$i" = "$j" ] && continue
-      if [ "${_bn[$i]}" = "${_bn[$j]}" ]; then
-        _clash[$i]=1
-        break
-      fi
-    done
+    [ -n "${_clash[$i]:-}" ] && _rp[$i]="$(relative_path "${REPO_ROOTS[$i]}")"
   done
+  # Only the filesystem root's basename contains "/", so this key stays unambiguous and
+  # compares relative paths only within a basename group.
+  while read -r idx; do
+    _rp_clash[$idx]=1
+  done < <(for i in "${_shown_indices[@]}"; do
+    [ -n "${_rp[$i]+set}" ] && print_key_record "$i" "${_bn[$i]}/${_rp[$i]}"
+  done | duplicate_indices)
 
   for i in "${_shown_indices[@]}"; do
-    [ "${_clash[$i]}" = "1" ] && _rp[$i]="$(relative_path "${REPO_ROOTS[$i]}")"
-  done
-
-  for i in "${_shown_indices[@]}"; do
-    if [ "${_clash[$i]}" = "0" ]; then
+    if [ -z "${_clash[$i]:-}" ]; then
       _DISP_NAMES[$i]="${_bn[$i]}"
+    elif [ -n "${_rp_clash[$i]:-}" ]; then
+      _DISP_NAMES[$i]="${REPO_ROOTS[$i]}"
     else
-      rcl=0
-      for j in "${_shown_indices[@]}"; do
-        [ "$i" = "$j" ] && continue
-        [ "${_bn[$i]}" = "${_bn[$j]}" ] || continue
-        if [ "${_rp[$i]}" = "${_rp[$j]}" ]; then
-          rcl=1
-          break
-        fi
-      done
-      if [ "$rcl" = "1" ]; then
-        _DISP_NAMES[$i]="${REPO_ROOTS[$i]}"
-      else
-        _DISP_NAMES[$i]="${_rp[$i]}"
-      fi
+      _DISP_NAMES[$i]="${_rp[$i]}"
     fi
   done
 }
@@ -2084,9 +2109,9 @@ print_default_view() {
     work_plain="${REPO_WORK_PLAIN[$i]}"
     [ "${#path_plain}" -gt "$max_path" ] && max_path="${#path_plain}"
     [ "${#type_plain}" -gt "$max_type" ] && max_type="${#type_plain}"
-    status_width="$(visual_width "$push_plain")"
+    visual_width "$push_plain" status_width
     [ "$status_width" -gt "$max_push" ] && max_push="$status_width"
-    status_width="$(visual_width "$work_plain")"
+    visual_width "$work_plain" status_width
     [ "$status_width" -gt "$max_work" ] && max_work="$status_width"
   done
 
@@ -2125,42 +2150,44 @@ print_default_view() {
     if [ "$wrap_paths" -eq 1 ]; then
       path_plain="${cached_paths[$i]}"
     else
-      path_plain="$(truncate_middle "${cached_paths[$i]}" "$path_width")"
+      truncate_middle "${cached_paths[$i]}" "$path_width" path_plain
     fi
     type_plain="[${REPO_TYPES[$i]}]"
-    push_plain="$(truncate_status_middle "${REPO_PUSH_PLAIN[$i]}" "$push_width")"
-    work_plain="$(truncate_status_middle "${REPO_WORK_PLAIN[$i]}" "$work_width")"
+    truncate_status_middle "${REPO_PUSH_PLAIN[$i]}" "$push_width" push_plain
+    truncate_status_middle "${REPO_WORK_PLAIN[$i]}" "$work_width" work_plain
     printf -v padded_path "%-${path_width}s" "$path_plain"
     printf -v padded_type "%-${max_type}s" "$type_plain"
     pad_to_visual "$push_plain" "$push_width" padded_push
     pad_to_visual "$work_plain" "$work_width" padded_work
+    colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push" padded_push
+    colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work" padded_work
     if [ "$FANCY_MODE" -eq 1 ] && [ "$ENABLE_COLOR" -eq 1 ]; then
       if [ "$wrap_paths" -eq 1 ]; then
         printf '\033[2m%s\033[0m\n  \033[2m%s\033[0m  %s  \033[2m|\033[0m  %s\n' \
           "$path_plain" \
           "$padded_type" \
-          "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
-          "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
+          "$padded_push" \
+          "$padded_work"
       else
         printf '\033[2m%s\033[0m  \033[2m%s\033[0m  %s  \033[2m|\033[0m  %s\n' \
           "$padded_path" \
           "$padded_type" \
-          "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
-          "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
+          "$padded_push" \
+          "$padded_work"
       fi
     else
       if [ "$wrap_paths" -eq 1 ]; then
         printf '%s\n  %s  %s  |  %s\n' \
           "$path_plain" \
           "$padded_type" \
-          "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
-          "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
+          "$padded_push" \
+          "$padded_work"
       else
         printf '%s  %s  %s  |  %s\n' \
           "$padded_path" \
           "$padded_type" \
-          "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
-          "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
+          "$padded_push" \
+          "$padded_work"
       fi
     fi
   done
@@ -2168,84 +2195,87 @@ print_default_view() {
 
 format_vcs_type_minimal() {
   local idx="$1"
+  local _var="$2"
   case "${REPO_TYPES[$idx]}" in
   git)
-    printf 'g'
+    printf -v "$_var" 'g'
     ;;
   jj)
-    printf 'j'
+    printf -v "$_var" 'j'
     ;;
   *)
-    printf '?'
+    printf -v "$_var" '?'
     ;;
   esac
 }
 
 format_push_minimal() {
   local idx="$1"
+  local _var="$2"
   local primary="${REPO_PUSH_PRIMARY_COUNT[$idx]:-0}"
   local secondary="${REPO_PUSH_SECONDARY_COUNT[$idx]:-0}"
 
   case "${REPO_PUSH_KIND[$idx]}" in
   clean)
-    printf -- '-'
+    printf -v "$_var" -- '-'
     ;;
   outgoing)
     if [ "$secondary" -gt 0 ]; then
-      printf '↑%s O +%s D' "$primary" "$secondary"
+      printf -v "$_var" '↑%s O +%s D' "$primary" "$secondary"
     else
-      printf '↑%s O' "$primary"
+      printf -v "$_var" '↑%s O' "$primary"
     fi
     ;;
   behind)
-    printf '↓%s B' "$primary"
+    printf -v "$_var" '↓%s B' "$primary"
     ;;
   diverged)
-    printf '↕%s O /%s B' "$primary" "$secondary"
+    printf -v "$_var" '↕%s O /%s B' "$primary" "$secondary"
     ;;
   draft)
-    printf '~%s D' "$primary"
+    printf -v "$_var" '~%s D' "$primary"
     ;;
   needs_description)
-    printf '!%s ND' "$primary"
+    printf -v "$_var" '!%s ND' "$primary"
     ;;
   question)
-    printf '?'
+    printf -v "$_var" '?'
     ;;
   push_failed | error | unavailable)
-    printf '!'
+    printf -v "$_var" '!'
     ;;
   *)
-    printf '!'
+    printf -v "$_var" '!'
     ;;
   esac
 }
 
 format_work_minimal() {
   local idx="$1"
+  local _var="$2"
   local modified="${REPO_WORK_MODIFIED_COUNT[$idx]:-0}"
   local untracked="${REPO_WORK_UNTRACKED_COUNT[$idx]:-0}"
 
   case "${REPO_WORK_KIND[$idx]}" in
   clean)
-    printf -- '-'
+    printf -v "$_var" -- '-'
     ;;
   changes)
     if [ "$modified" -gt 0 ] && [ "$untracked" -gt 0 ]; then
-      printf '*%s M +%s U' "$modified" "$untracked"
+      printf -v "$_var" '*%s M +%s U' "$modified" "$untracked"
     elif [ "$modified" -gt 0 ]; then
-      printf '*%s M' "$modified"
+      printf -v "$_var" '*%s M' "$modified"
     elif [ "$untracked" -gt 0 ]; then
-      printf '+%s U' "$untracked"
+      printf -v "$_var" '+%s U' "$untracked"
     else
-      printf -- '-'
+      printf -v "$_var" -- '-'
     fi
     ;;
   error | unavailable)
-    printf '!'
+    printf -v "$_var" '!'
     ;;
   *)
-    printf '!'
+    printf -v "$_var" '!'
     ;;
   esac
 }
@@ -2259,18 +2289,18 @@ print_minimal_view() {
   local max_path=0 max_type=0 max_push=0 max_work=0
   for i in "${_shown_indices[@]}"; do
     path_plain="${_DISP_NAMES[$i]}"
-    type_plain="$(format_vcs_type_minimal "$i")"
-    push_plain="$(format_push_minimal "$i")"
-    work_plain="$(format_work_minimal "$i")"
+    format_vcs_type_minimal "$i" type_plain
+    format_push_minimal "$i" push_plain
+    format_work_minimal "$i" work_plain
     cached_paths[$i]="$path_plain"
     cached_types[$i]="$type_plain"
     cached_push[$i]="$push_plain"
     cached_work[$i]="$work_plain"
     [ "${#path_plain}" -gt "$max_path" ] && max_path="${#path_plain}"
     [ "${#type_plain}" -gt "$max_type" ] && max_type="${#type_plain}"
-    status_width="$(visual_width "$push_plain")"
+    visual_width "$push_plain" status_width
     [ "$status_width" -gt "$max_push" ] && max_push="$status_width"
-    status_width="$(visual_width "$work_plain")"
+    visual_width "$work_plain" status_width
     [ "$status_width" -gt "$max_work" ] && max_work="$status_width"
   done
 
@@ -2309,27 +2339,29 @@ print_minimal_view() {
     if [ "$wrap_paths" -eq 1 ]; then
       path_plain="${cached_paths[$i]}"
     else
-      path_plain="$(truncate_middle "${cached_paths[$i]}" "$path_width")"
+      truncate_middle "${cached_paths[$i]}" "$path_width" path_plain
     fi
     type_plain="${cached_types[$i]}"
-    push_plain="$(truncate_status_middle "${cached_push[$i]}" "$push_width")"
-    work_plain="$(truncate_status_middle "${cached_work[$i]}" "$work_width")"
+    truncate_status_middle "${cached_push[$i]}" "$push_width" push_plain
+    truncate_status_middle "${cached_work[$i]}" "$work_width" work_plain
     printf -v padded_path "%-${path_width}s" "$path_plain"
     printf -v padded_type "%-${max_type}s" "$type_plain"
     pad_to_visual "$push_plain" "$push_width" padded_push
     pad_to_visual "$work_plain" "$work_width" padded_work
+    colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push" padded_push
+    colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work" padded_work
     if [ "$wrap_paths" -eq 1 ]; then
       printf '%s\n  %s  %s  %s\n' \
         "$path_plain" \
         "$padded_type" \
-        "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
-        "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
+        "$padded_push" \
+        "$padded_work"
     else
       printf '%s  %s  %s  %s\n' \
         "$padded_path" \
         "$padded_type" \
-        "$(colorize_status "${REPO_PUSH_KIND[$i]}" "$padded_push")" \
-        "$(colorize_status "${REPO_WORK_KIND[$i]}" "$padded_work")"
+        "$padded_push" \
+        "$padded_work"
     fi
   done
 }
@@ -2436,7 +2468,7 @@ print_section_label() {
   local text="$3"
   local color
   if [ "$ENABLE_COLOR" -eq 1 ]; then
-    color="$(status_color "$kind")"
+    status_color "$kind" color
     if [ -n "$color" ]; then
       printf '   %b%s %s%b\n' "$color" "$symbol" "$text" '\033[0m'
       return
@@ -2490,18 +2522,20 @@ print_detail_view() {
   done
 
   local first=1
-  local push_kind work_kind label formatted
+  local push_kind work_kind label formatted push_status work_status
   for i in "${_shown_indices[@]}"; do
     [ "$first" -eq 1 ] || printf '\n'
     first=0
     label="${_DISP_NAMES[$i]}  [${REPO_TYPES[$i]}]"
     print_repo_header_line "$label"
+    colorize_status "${REPO_PUSH_KIND[$i]}" "${REPO_PUSH_PLAIN[$i]}" push_status
+    colorize_status "${REPO_WORK_KIND[$i]}" "${REPO_WORK_PLAIN[$i]}" work_status
     if [ "$FANCY_MODE" -eq 1 ] && [ "$ENABLE_COLOR" -eq 1 ]; then
-      printf '   \033[2mpush:\033[0m  %s\n' "$(colorize_status "${REPO_PUSH_KIND[$i]}" "${REPO_PUSH_PLAIN[$i]}")"
-      printf '   \033[2mwork:\033[0m  %s\n' "$(colorize_status "${REPO_WORK_KIND[$i]}" "${REPO_WORK_PLAIN[$i]}")"
+      printf '   \033[2mpush:\033[0m  %s\n' "$push_status"
+      printf '   \033[2mwork:\033[0m  %s\n' "$work_status"
     else
-      printf '   push:  %s\n' "$(colorize_status "${REPO_PUSH_KIND[$i]}" "${REPO_PUSH_PLAIN[$i]}")"
-      printf '   work:  %s\n' "$(colorize_status "${REPO_WORK_KIND[$i]}" "${REPO_WORK_PLAIN[$i]}")"
+      printf '   push:  %s\n' "$push_status"
+      printf '   work:  %s\n' "$work_status"
     fi
 
     push_kind="${REPO_PUSH_KIND[$i]}"

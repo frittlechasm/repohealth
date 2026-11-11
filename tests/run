@@ -518,6 +518,26 @@ assert_path_display() {
   grep -F -- '-- apps/service  [git]' "$detail_stdout" >/dev/null || fail "expected clashing repos to disambiguate with relative paths"
   grep -F -- '-- tools/service  [git]' "$detail_stdout" >/dev/null || fail "expected clashing repos to disambiguate with relative paths"
 
+  # Relative paths that also clash across scan roots fall back to full paths
+  local root_a="$TMP_ROOT/path-root-a"
+  local root_b="$TMP_ROOT/path-root-b"
+  local multi_stdout="$TMP_ROOT/path-multi.stdout"
+  local multi_stderr="$TMP_ROOT/path-multi.stderr"
+  local multi_status="$TMP_ROOT/path-multi.status"
+  local repo
+  for repo in "$root_a/apps/service" "$root_a/tools/service" "$root_b/apps/service"; do
+    init_git_repo "$repo"
+    write_file "$repo/file.txt" $'gamma\n'
+    commit_all "$repo" "Initial commit" "2024-01-06T00:00:00 +0000"
+  done
+  run_cli "$multi_stdout" "$multi_stderr" "$multi_status" --jobs 1 --filter all "$root_a" "$root_b"
+  [ ! -s "$multi_stderr" ] || fail "expected multi-root path-display to avoid stderr"
+  grep -F "$(cd "$root_a/apps/service" && pwd -P)" "$multi_stdout" >/dev/null ||
+    fail "expected clashing relative paths to fall back to full paths"
+  grep -F "$(cd "$root_b/apps/service" && pwd -P)" "$multi_stdout" >/dev/null ||
+    fail "expected clashing relative paths to fall back to full paths"
+  grep -E '^tools/service( |$)' "$multi_stdout" >/dev/null || fail "expected unique relative path to stay relative"
+
   # --paths relative shows relative path
   local rel_stdout="$TMP_ROOT/path-relative.stdout"
   local rel_stderr="$TMP_ROOT/path-relative.stderr"
@@ -545,6 +565,20 @@ assert_path_display() {
   if grep -F 'nested-repo' "$excl_stdout" >/dev/null 2>&1; then
     fail "expected --exclude to match against relative path and exclude nested-repo"
   fi
+}
+
+assert_repo_name_is_not_evaluated() {
+  local workspace="$TMP_ROOT/crafted-name-workspace"
+  local repo="$workspace/a"$'\n''REPO_ROOTS[$(warn INJECTED)]'$'\t''a'
+  local stdout_file="$TMP_ROOT/crafted-name.stdout"
+  local stderr_file="$TMP_ROOT/crafted-name.stderr"
+  local status_file="$TMP_ROOT/crafted-name.status"
+
+  # Some filesystems or Git builds reject newlines in paths; there is nothing to check there.
+  { mkdir -p "$repo" && git init -q "$repo"; } >/dev/null 2>&1 || return 0
+  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --filter all "$workspace"
+  [ ! -s "$stderr_file" ] || fail "expected a crafted repo name to render as data without errors"
+  grep -F 'REPO_ROOTS[$(warn INJECTED)]' "$stdout_file" >/dev/null || fail "expected the crafted repo to be listed"
 }
 
 assert_json_paths_stable() {
@@ -1501,6 +1535,7 @@ main() {
   assert_detail_alias_matches_output_precedence "$workspace"
   assert_repo_selector_drills_into_parent_scan "$workspace"
   assert_path_display
+  assert_repo_name_is_not_evaluated
   assert_json_paths_stable
   assert_jj_discovery_prefers_jj
   assert_jj_work_state_uses_diff_only

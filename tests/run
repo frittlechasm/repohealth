@@ -56,6 +56,7 @@ init_bare_repo() {
   local path="$1"
   mkdir -p "$(dirname "$path")"
   git init --bare "$path" >/dev/null 2>&1
+  git -C "$path" symbolic-ref HEAD refs/heads/main
 }
 
 commit_all() {
@@ -243,13 +244,19 @@ assert_filter_modes() {
   write_file "$workspace/outgoing-clean/file.txt" $'base\noutgoing\n'
   commit_all "$workspace/outgoing-clean" "Outgoing commit" "2024-02-02T00:00:00 +0000"
 
-  init_bare_repo "$remotes/behind-clean.git"
+  # Force a non-main default so the clone fixture cannot depend on host Git settings.
+  (
+    export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.defaultBranch GIT_CONFIG_VALUE_0=master
+    init_bare_repo "$remotes/behind-clean.git"
+  )
   init_git_repo "$workspace/behind-clean"
   write_file "$workspace/behind-clean/file.txt" $'base\n'
   commit_all "$workspace/behind-clean" "Initial commit" "2024-02-03T00:00:00 +0000"
   git -C "$workspace/behind-clean" remote add origin "$remotes/behind-clean.git"
   git -C "$workspace/behind-clean" push -u origin main >/dev/null 2>&1
   git clone "$remotes/behind-clean.git" "$clone" >/dev/null 2>&1
+  [ "$(git -C "$clone" symbolic-ref HEAD)" = refs/heads/main ] ||
+    fail "expected fixture clone to check out main even when Git defaults to master"
   git -C "$clone" config user.name "Repohealth Tests"
   git -C "$clone" config user.email "repohealth-tests@example.com"
   write_file "$clone/file.txt" $'base\nremote\n'

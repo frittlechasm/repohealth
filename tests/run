@@ -1653,7 +1653,7 @@ assert_missing_dependencies_fail_early() {
 assert_version() {
   local output
   output="$("$CLI" --version)"
-  [ "$output" = "repohealth 0.1.5" ] || fail "expected version 0.1.5, got: $output"
+  [ "$output" = "repohealth 0.1.6" ] || fail "expected version 0.1.6, got: $output"
 }
 
 main() {

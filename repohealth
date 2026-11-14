@@ -210,12 +210,16 @@ update_repohealth() {
 }
 
 die() {
-  echo "Error: $*" >&2
+  local message
+  terminal_escape message "$*"
+  printf 'Error: %s\n' "$message" >&2
   exit 1
 }
 
 warn() {
-  echo "Warning: $*" >&2
+  local message
+  terminal_escape message "$*"
+  printf 'Warning: %s\n' "$message" >&2
 }
 
 command_exists() {
@@ -363,12 +367,36 @@ set_filter_mode() {
 }
 
 json_escape() {
-  local _var="$1" _s="$2"
+  local _var="$1" _s="$2" _code _char _escape
+  local LC_ALL=C
   _s="${_s//\\/\\\\}"
   _s="${_s//\"/\\\"}"
   _s="${_s//$'\r'/\\r}"
   _s="${_s//$'\n'/\\n}"
   _s="${_s//$'\t'/\\t}"
+  if [[ "$_s" == *[$'\001'-$'\037'$'\177']* ]]; then
+    for _code in {1..31} 127; do
+      printf -v _char '\\%03o' "$_code"
+      printf -v _char '%b' "$_char"
+      printf -v _escape '\\u%04x' "$_code"
+      _s="${_s//"$_char"/$_escape}"
+    done
+  fi
+  printf -v "$_var" '%s' "$_s"
+}
+
+# Escape untrusted terminal text before measuring it or adding our own ANSI codes.
+terminal_escape() {
+  local _var="$1" _s="$2" _code _char _escape
+  local LC_ALL=C
+  if [[ "$_s" == *[$'\001'-$'\037'$'\177']* ]]; then
+    for _code in {1..31} 127; do
+      printf -v _char '\\%03o' "$_code"
+      printf -v _char '%b' "$_char"
+      printf -v _escape '\\x%02x' "$_code"
+      _s="${_s//"$_char"/$_escape}"
+    done
+  fi
   printf -v "$_var" '%s' "$_s"
 }
 
@@ -408,6 +436,7 @@ print_json_numstat_array() {
   printf '[\n'
   while IFS=$'\t' read -r added removed path; do
     [ -n "$added$removed$path" ] || continue
+    is_numstat_count "$added" && is_numstat_count "$removed" || continue
     [ "$first" -eq 0 ] && printf ',\n'
     first=0
     printf '%s  {\n' "$indent"
@@ -478,33 +507,35 @@ EOF
 }
 
 canonicalize_dir() {
-  local path="$1"
+  local path="$1" _var="$2" _resolved
+  printf -v "$_var" '%s' ''
   if command_exists realpath; then
-    realpath "$path"
+    _resolved="$(realpath "$path" && printf '.')" || return 1
   else
-    (
-      cd "$path" 2>/dev/null && pwd -P
-    )
+    _resolved="$(cd "$path" 2>/dev/null && pwd -P && printf '.')" || return 1
   fi
+  # Preserve newlines belonging to the path, removing only the command's final newline.
+  _resolved="${_resolved%.}"
+  printf -v "$_var" '%s' "${_resolved%$'\n'}"
 }
 
 relative_path() {
-  local path="$1"
+  local path="$1" _var="$2"
   local i root name
   for ((i = 0; i < ${#SCAN_ROOT_CANONS[@]}; i++)); do
     root="${SCAN_ROOT_CANONS[$i]}"
     case "$path" in
     "$root")
       if [ "${#SCAN_ROOT_CANONS[@]}" -eq 1 ]; then
-        printf '.'
+        printf -v "$_var" '.'
         return
       fi
       basename_path "$root" name
-      printf '%s' "$name"
+      printf -v "$_var" '%s' "$name"
       return
       ;;
     "$root"/*)
-      printf '%s' "${path#"$root"/}"
+      printf -v "$_var" '%s' "${path#"$root"/}"
       return
       ;;
     esac
@@ -512,16 +543,16 @@ relative_path() {
   if [ -n "${HOME:-}" ]; then
     case "$path" in
     "$HOME")
-      printf '~'
+      printf -v "$_var" '~'
       return
       ;;
     "$HOME"/*)
-      printf '~/%s' "${path#"$HOME"/}"
+      printf -v "$_var" '~/%s' "${path#"$HOME"/}"
       return
       ;;
     esac
   fi
-  printf '%s' "$path"
+  printf -v "$_var" '%s' "$path"
 }
 
 path_is_excluded() {
@@ -530,7 +561,7 @@ path_is_excluded() {
 
   [ "${#EXCLUDE_PATTERNS[@]}" -gt 0 ] || return 1
 
-  rel_path="$(relative_path "$path")"
+  relative_path "$path" rel_path
   for pat in "${EXCLUDE_PATTERNS[@]}"; do
     if [[ "$rel_path" =~ $pat ]]; then
       return 0
@@ -554,17 +585,16 @@ basename_path() {
 render_path_style() {
   local path="$1"
   local style="$2"
-  local name
+  local _var="$3"
   case "$style" in
   name)
-    basename_path "$path" name
-    printf '%s' "$name"
+    basename_path "$path" "$_var"
     ;;
   full)
-    printf '%s' "$path"
+    printf -v "$_var" '%s' "$path"
     ;;
   relative)
-    relative_path "$path"
+    relative_path "$path" "$_var"
     ;;
   *)
     die "render_path_style: unknown style '$style'"
@@ -573,16 +603,16 @@ render_path_style() {
 }
 
 json_path() {
-  local path="$1"
+  local path="$1" _var="$2"
   if [ "$PATH_STYLE_EXPLICIT" -eq 1 ]; then
-    render_path_style "$path" "$PATH_STYLE"
+    render_path_style "$path" "$PATH_STYLE" "$_var"
     return
   fi
   if [ "${#SCAN_ROOT_CANONS[@]}" -le 1 ]; then
-    relative_path "$path"
+    relative_path "$path" "$_var"
     return
   fi
-  printf '%s' "$path"
+  printf -v "$_var" '%s' "$path"
 }
 
 is_integer() {
@@ -593,6 +623,15 @@ is_integer() {
   *)
     return 0
     ;;
+  esac
+}
+
+# Bound counts to 31 bits, leaving headroom for sums and bar scaling in Bash's 64-bit arithmetic.
+is_numstat_count() {
+  case "$1" in
+  - | 0) return 0 ;;
+  [1-9]*) is_integer "$1" && [ "${#1}" -le 10 ] && [ "$1" -le 2147483647 ] ;;
+  *) return 1 ;;
   esac
 }
 
@@ -643,6 +682,7 @@ colorize_status() {
   local text="$2"
   local _var="$3"
   local color
+  terminal_escape text "$text"
   if [ "$ENABLE_COLOR" -ne 1 ]; then
     printf -v "$_var" '%s' "$text"
     return
@@ -812,7 +852,7 @@ discover_repos() {
     fi
     normalized_root="$candidate"
 
-    normalized_root="$(canonicalize_dir "$normalized_root" 2>/dev/null || true)"
+    canonicalize_dir "$normalized_root" normalized_root 2>/dev/null || true
     if [ -z "$normalized_root" ]; then
       normalized_root="$candidate"
     fi
@@ -836,14 +876,15 @@ discover_repos() {
 sort_repos() {
   local count="${#REPO_ROOTS[@]}"
   [ "$count" -le 1 ] && return
-  local i root idx
+  local i key idx
   local new_roots=() new_types=()
-  while IFS=$'\t' read -r root idx; do
-    new_roots+=("$root")
+  while IFS=$'\t' read -r key idx; do
+    new_roots+=("${REPO_ROOTS[$idx]}")
     new_types+=("${REPO_TYPES[$idx]}")
   done < <(
     for ((i = 0; i < count; i++)); do
-      printf '%s\t%s\n' "${REPO_ROOTS[$i]}" "$i"
+      json_escape key "${REPO_ROOTS[$i]}"
+      printf '%s\t%s\n' "$key" "$i"
     done | sort
   )
   REPO_ROOTS=("${new_roots[@]}")
@@ -897,7 +938,7 @@ repo_matches_selectors() {
   [ "${#REPO_SELECTORS[@]}" -gt 0 ] || return 0
 
   basename_path "${REPO_ROOTS[$idx]}" name
-  rel="$(relative_path "${REPO_ROOTS[$idx]}")"
+  relative_path "${REPO_ROOTS[$idx]}" rel
   full="${REPO_ROOTS[$idx]}"
 
   for selector in "${REPO_SELECTORS[@]}"; do
@@ -1041,6 +1082,7 @@ tsv_max_total() {
   [ -n "$block" ] || { printf '0'; return; }
   while IFS=$'\t' read -r added removed path; do
     [ -n "$added$removed$path" ] || continue
+    is_numstat_count "$added" && is_numstat_count "$removed" || continue
     if [ "$added" != "-" ] && [ "$removed" != "-" ]; then
       t=$((added + removed))
       if [ "$t" -gt "$max" ]; then max="$t"; fi
@@ -1069,7 +1111,9 @@ format_compact_stat_tsv() {
 
   while IFS=$'\t' read -r added removed path; do
     [ -n "$added$removed$path" ] || continue
+    is_numstat_count "$added" && is_numstat_count "$removed" || continue
 
+    terminal_escape path "$path"
     count=$((count + 1))
     if [ "$added" = "-" ] || [ "$removed" = "-" ]; then
       paths+=("$path")
@@ -1210,27 +1254,31 @@ EOF
   printf '%s\n%s' "$result" "$summary"
 }
 
+prepare_git_scan() {
+  local root="$1" keys_file="$2" key status=0
+  # Empty fsmonitor also disables hooks on Git versions predating boolean support.
+  GIT_SCAN_OPTIONS=(-c core.fsmonitor= -c core.hooksPath=/dev/null -c log.showSignature=false)
+  git "${GIT_SCAN_OPTIONS[@]}" -C "$root" config --null --name-only \
+    --get-regexp '^filter\..*\.(clean|process|required)$' >"$keys_file" 2>/dev/null || status=$?
+  [ "$status" -le 1 ] || return 1
+  # Let Git parse includes and subsection names. NUL records preserve unusual names.
+  while IFS= read -r -d '' key; do
+    case "$key" in
+    *=*) return 1 ;; # Git's -c syntax cannot represent a key containing '='.
+    *.required) GIT_SCAN_OPTIONS+=(-c "$key=false") ;;
+    *) GIT_SCAN_OPTIONS+=(-c "$key=") ;;
+    esac
+  done <"$keys_file"
+}
+
+git_query() {
+  # Transport denial also covers Git versions that predate GIT_NO_LAZY_FETCH.
+  GIT_OPTIONAL_LOCKS=0 GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL= git "${GIT_SCAN_OPTIONS[@]}" "$@"
+}
+
 collect_git_unborn_worktree_numstat() {
-  local root="$1"
-  local tmp_dir="" tmp_index=""
-  local detail=""
-
-  tmp_dir="$(make_temp_dir)" || {
-    printf '%s' "$(git -C "$root" diff --cached --numstat --root 2>/dev/null || true)"
-    return
-  }
-
-  tmp_index="$tmp_dir/index"
-  : >"$tmp_index"
-
-  if GIT_INDEX_FILE="$tmp_index" git -C "$root" add -A -- . >/dev/null 2>&1; then
-    detail="$(GIT_INDEX_FILE="$tmp_index" git -C "$root" diff --cached --numstat --root 2>/dev/null || true)"
-  else
-    detail="$(git -C "$root" diff --cached --numstat --root 2>/dev/null || true)"
-  fi
-
-  rm -rf "$tmp_dir"
-  printf '%s' "$detail"
+  # Without HEAD, report staged content. Never stage files or run clean filters to inspect them.
+  git_query -C "$1" diff --ignore-submodules=dirty --no-ext-diff --no-textconv --cached --numstat --root 2>/dev/null || true
 }
 
 build_jj_commit_detail() {
@@ -1302,7 +1350,7 @@ collect_git_work_state() {
   local idx="$1"
   local root="$2"
   local porcelain
-  if ! porcelain="$(git -C "$root" status --porcelain=v1 --untracked-files=normal 2>&1)"; then
+  if ! porcelain="$(git_query -C "$root" status --ignore-submodules=dirty --porcelain=v1 --untracked-files=normal 2>&1)"; then
     warn "Git working-copy check failed for $root: $(first_nonempty_line "$porcelain")"
     set_work_status "$idx" "error" "!! scan error" "$(first_nonempty_line "$porcelain")"
     return
@@ -1337,12 +1385,12 @@ EOF
   local detail=""
   if [ "$COLLECT_DETAIL_DATA" -eq 1 ] && [ "$modified" -gt 0 ]; then
     local has_head=1
-    if ! git -C "$root" rev-parse --verify HEAD >/dev/null 2>&1; then
+    if ! git_query -C "$root" rev-parse --verify HEAD >/dev/null 2>&1; then
       has_head=0
     fi
 
     if [ "$has_head" -eq 1 ]; then
-      detail="$(git -C "$root" diff HEAD --numstat 2>/dev/null || true)"
+      detail="$(git_query -C "$root" diff --ignore-submodules=dirty --no-ext-diff --no-textconv HEAD --numstat 2>/dev/null || true)"
     else
       detail="$(collect_git_unborn_worktree_numstat "$root")"
     fi
@@ -1360,7 +1408,7 @@ collect_git_state() {
   local root="$2"
   local status_output
 
-  if ! status_output="$(git -C "$root" status --porcelain=v2 --branch --untracked-files=normal 2>&1)"; then
+  if ! status_output="$(git_query -C "$root" status --ignore-submodules=dirty --porcelain=v2 --branch --untracked-files=normal 2>&1)"; then
     warn "Git state check failed for $root: $(first_nonempty_line "$status_output")"
     set_push_status "$idx" "error" "!! scan error" "$(first_nonempty_line "$status_output")"
     set_work_status "$idx" "error" "!! scan error" "$(first_nonempty_line "$status_output")"
@@ -1368,13 +1416,13 @@ collect_git_state() {
   fi
 
   # Parse branch header lines
-  local oid="" head_branch="" upstream="" ahead=0 behind=0 has_upstream=0
+  local oid="" head_branch="" ahead=0 behind=0 has_upstream=0
   local ab line
   while IFS= read -r line; do
     case "$line" in
       "# branch.oid "*)      oid="${line#'# branch.oid '}" ;;
       "# branch.head "*)     head_branch="${line#'# branch.head '}" ;;
-      "# branch.upstream "*) upstream="${line#'# branch.upstream '}"; has_upstream=1 ;;
+      "# branch.upstream "*) has_upstream=1 ;;
       "# branch.ab "*)
         ab="${line#'# branch.ab '}"
         ahead="${ab%% -*}"; ahead="${ahead#+}"
@@ -1392,7 +1440,7 @@ EOF
     set_push_status "$idx" "question" "? detached HEAD" "detached HEAD — no upstream branch to compare"
   elif [ "$has_upstream" -eq 0 ]; then
     local remotes
-    remotes="$(git -C "$root" remote 2>/dev/null || true)"
+    remotes="$(git_query -C "$root" remote 2>/dev/null || true)"
     if [ "$(count_nonempty_lines "$remotes")" -eq 0 ]; then
       set_push_status "$idx" "question" "? no remote" "no Git remote configured"
     else
@@ -1401,7 +1449,7 @@ EOF
   else
     local push_detail=""
     if [ "$COLLECT_DETAIL_DATA" -eq 1 ] && [ "$ahead" -gt 0 ]; then
-      push_detail="$(build_git_outgoing_detail "$root" "$upstream")"
+      push_detail="$(build_git_outgoing_detail "$root")"
     fi
     if [ "$ahead" -gt 0 ] && [ "$behind" -gt 0 ]; then
       set_push_status "$idx" "diverged" "↕ ${ahead} ahead, ${behind} behind" "behind remote by ${behind} commit(s)" "$push_detail" "$ahead" "$behind"
@@ -1442,7 +1490,7 @@ EOF
     if [ "$oid" = "(initial)" ]; then
       work_detail="$(collect_git_unborn_worktree_numstat "$root")"
     else
-      work_detail="$(git -C "$root" diff HEAD --numstat 2>/dev/null || true)"
+      work_detail="$(git_query -C "$root" diff --ignore-submodules=dirty --no-ext-diff --no-textconv HEAD --numstat 2>/dev/null || true)"
     fi
   fi
 
@@ -1457,12 +1505,11 @@ EOF
 
 build_git_outgoing_detail() {
   local root="$1"
-  local upstream="$2"
   local result="" tab=$'\t'
   local raw_log line current_hash="" current_stats=""
 
   # Single git log call: subject + numstat for all outgoing commits
-  raw_log="$(git -C "$root" log --reverse --numstat --format="__C__${tab}%h  %s" "${upstream}..HEAD" 2>/dev/null || true)"
+  raw_log="$(git_query -C "$root" log --no-ext-diff --no-textconv --reverse --numstat --format="__C__${tab}%h  %s" '@{upstream}..HEAD' 2>/dev/null || true)"
   if [ -z "$raw_log" ]; then
     return
   fi
@@ -1832,14 +1879,21 @@ collect_repo_state() {
   local root="${REPO_ROOTS[$idx]}"
   local type="${REPO_TYPES[$idx]}"
   local has_git_checkout=0
+  local -a GIT_SCAN_OPTIONS=()
+
+  if [ -e "$root/.git" ]; then
+    has_git_checkout=1
+    if ! prepare_git_scan "$root" "$STATE_TMP_DIR/git.$idx.keys"; then
+      warn "Git configuration check failed for $root"
+      set_push_status "$idx" "error" "!! scan error" "could not inspect Git filter configuration"
+      set_work_status "$idx" "error" "!! scan error" "could not inspect Git filter configuration"
+      return
+    fi
+  fi
 
   if [ "$type" = "git" ]; then
     collect_git_state "$idx" "$root"
     return
-  fi
-
-  if [ -e "$root/.git" ]; then
-    has_git_checkout=1
   fi
 
   if [ "$HAVE_JJ" -ne 1 ]; then
@@ -1902,6 +1956,8 @@ collect_all_repo_states() {
     return
   fi
 
+  STATE_TMP_DIR="$(make_temp_dir)" || die "failed to create temporary directory for state collection"
+
   # Extra tokens cannot increase concurrency and can fill the FIFO before readers start.
   if [ "$jobs" -gt "$repo_count" ]; then
     jobs="$repo_count"
@@ -1913,8 +1969,6 @@ collect_all_repo_states() {
     done
     return
   fi
-
-  STATE_TMP_DIR="$(make_temp_dir)" || die "failed to create temporary directory for parallel state collection"
 
   # Start another repo as soon as any worker releases its slot.
   local sem_fifo="$STATE_TMP_DIR/sem"
@@ -2050,7 +2104,7 @@ print_key_record() {
 #   local -a _DISP_NAMES=()
 collect_shown_repos() {
   _shown_indices=()
-  local i
+  local i display_name
   for ((i = 0; i < ${#REPO_ROOTS[@]}; i++)); do
     if ! should_show_repo "$i"; then
       continue
@@ -2064,7 +2118,9 @@ collect_shown_repos() {
   # relative path (or full path if the relative path also collides).
   if [ "$PATH_STYLE_EXPLICIT" -eq 1 ]; then
     for i in "${_shown_indices[@]}"; do
-      _DISP_NAMES[$i]="$(render_path_style "${REPO_ROOTS[$i]}" "$PATH_STYLE")"
+      render_path_style "${REPO_ROOTS[$i]}" "$PATH_STYLE" display_name
+      terminal_escape display_name "$display_name"
+      _DISP_NAMES[$i]="$display_name"
     done
     return
   fi
@@ -2081,7 +2137,10 @@ collect_shown_repos() {
   done < <(for i in "${_shown_indices[@]}"; do print_key_record "$i" "${_bn[$i]}"; done | duplicate_indices)
 
   for i in "${_shown_indices[@]}"; do
-    [ -n "${_clash[$i]:-}" ] && _rp[$i]="$(relative_path "${REPO_ROOTS[$i]}")"
+    if [ -n "${_clash[$i]:-}" ]; then
+      relative_path "${REPO_ROOTS[$i]}" display_name
+      _rp[$i]="$display_name"
+    fi
   done
   # Only the filesystem root's basename contains "/", so this key stays unambiguous and
   # compares relative paths only within a basename group.
@@ -2099,6 +2158,8 @@ collect_shown_repos() {
     else
       _DISP_NAMES[$i]="${_rp[$i]}"
     fi
+    terminal_escape display_name "${_DISP_NAMES[$i]}"
+    _DISP_NAMES[$i]="$display_name"
   done
 }
 
@@ -2117,11 +2178,13 @@ print_default_view() {
     # Outgoing rows show only the count; JJ bookmarks get their own rows below.
     push_text="${REPO_PUSH_PLAIN[$i]}"
     [ "${REPO_PUSH_KIND[$i]}" = "outgoing" ] && push_text="↑ ${REPO_PUSH_PRIMARY_COUNT[$i]} outgoing"
+    terminal_escape push_text "$push_text"
     push_texts[$i]="$push_text"
     visual_width "$push_text" width
     [ "$width" -gt "$push_width" ] && push_width="$width"
     if [ -n "${REPO_PUSH_BOOKMARKS[$i]}" ]; then
       while read -r n bookmark; do
+        terminal_escape bookmark "$bookmark"
         [ $((${#bookmark} + 2)) -gt "$name_width" ] && name_width=$((${#bookmark} + 2))
         [ $((${#n} + 2)) -gt "$push_width" ] && push_width=$((${#n} + 2))
       done <<EOF
@@ -2201,6 +2264,7 @@ EOF
 
     [ -n "${REPO_PUSH_BOOKMARKS[$i]}" ] || continue
     while read -r n bookmark; do
+      terminal_escape bookmark "$bookmark"
       pad_to_visual "↑ $n" "$push_width" padded_push
       if [ "$wrap_paths" -eq 1 ]; then
         printf '  %s%s%s\n  %s%s  %s  |%s\n' "$grey" "$bookmark" "$reset" "$grey" "$padded_type" "$padded_push" "$reset"
@@ -2398,6 +2462,7 @@ format_commit_raw_data() {
     case "$line" in
     "__C__${tab}"*)
       title="${line#"__C__${tab}"}"
+      terminal_escape title "$title"
       cur_tsv=""
       in_commit=1
       ;;
@@ -2439,12 +2504,14 @@ EOF
 print_multiline_block() {
   local block="$1"
   local indent="${2:-5}"
+  local formatted="${3:-0}"
   local pad line
   printf -v pad '%*s' "$indent" ''
   while IFS= read -r line; do
     if [ -z "$line" ]; then
       printf '\n'
     else
+      [ "$formatted" -eq 1 ] || terminal_escape line "$line"
       printf '%s%s\n' "$pad" "$line"
     fi
   done <<EOF
@@ -2543,7 +2610,7 @@ print_detail_view() {
   done
 
   local first=1
-  local push_kind work_kind label formatted push_status work_status
+  local push_kind work_kind label formatted push_status work_status note
   for i in "${_shown_indices[@]}"; do
     [ "$first" -eq 1 ] || printf '\n'
     first=0
@@ -2568,17 +2635,19 @@ print_detail_view() {
       case "${REPO_PUSH_DETAIL[$i]}" in
       "__C__${tab}"*)
         formatted="$(format_commit_raw_data "${REPO_PUSH_DETAIL[$i]}" "$global_max_total")"
-        print_multiline_block "$formatted" 5
+        print_multiline_block "$formatted" 5 1
         ;;
       *)
         print_multiline_block "${REPO_PUSH_DETAIL[$i]}" 5
         ;;
       esac
       if [ "$push_kind" = "diverged" ] && [ -n "${REPO_PUSH_NOTE[$i]}" ]; then
-        printf '   Note: %s\n' "${REPO_PUSH_NOTE[$i]}"
+        terminal_escape note "${REPO_PUSH_NOTE[$i]}"
+        printf '   Note: %s\n' "$note"
       fi
     elif [ -n "${REPO_PUSH_NOTE[$i]}" ]; then
-      printf '   Note: %s\n' "${REPO_PUSH_NOTE[$i]}"
+      terminal_escape note "${REPO_PUSH_NOTE[$i]}"
+      printf '   Note: %s\n' "$note"
     fi
 
     if [ -n "${REPO_DRAFT_DETAIL[$i]}" ]; then
@@ -2592,7 +2661,7 @@ print_detail_view() {
       printf '\n'
       print_section_label "changes" "*" "Working copy"
       formatted="$(format_compact_stat_tsv "${REPO_WORK_DETAIL[$i]}" 5 "$global_max_total")"
-      print_multiline_block "$formatted" 5
+      print_multiline_block "$formatted" 5 1
     fi
 
     if [ -n "${REPO_UNTRACKED_DETAIL[$i]}" ]; then
@@ -2603,7 +2672,8 @@ print_detail_view() {
 
     if [ "$work_kind" = "error" ] || [ "$work_kind" = "unavailable" ]; then
       if [ -n "${REPO_WORK_NOTE[$i]}" ]; then
-        printf '   Note: %s\n' "${REPO_WORK_NOTE[$i]}"
+        terminal_escape note "${REPO_WORK_NOTE[$i]}"
+        printf '   Note: %s\n' "$note"
       fi
     fi
   done
@@ -2640,7 +2710,7 @@ print_json_view() {
       continue
     fi
     local path_plain
-    path_plain="$(json_path "${REPO_ROOTS[$i]}")"
+    json_path "${REPO_ROOTS[$i]}" path_plain
     [ "$first" -eq 0 ] && printf ',\n'
     first=0
     printf '    {\n'
@@ -2822,7 +2892,7 @@ main() {
   local _root _canon
   for _root in "${SCAN_ROOTS[@]}"; do
     [ -d "$_root" ] || die "directory does not exist: $_root"
-    _canon="$(canonicalize_dir "$_root" 2>/dev/null || true)"
+    canonicalize_dir "$_root" _canon 2>/dev/null || true
     [ -n "$_canon" ] || die "failed to resolve scan root: $_root"
     SCAN_ROOT_CANONS+=("$_canon")
   done

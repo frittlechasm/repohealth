@@ -351,7 +351,7 @@ assert_default_jobs_floor() {
   write_file "$max_file" $'0\n'
 
   write_executable "$fakebin/getconf" $'#!/usr/bin/env bash\nif [ "${1:-}" = "_NPROCESSORS_ONLN" ]; then\n  printf \'4\\n\'\nelse\n  /usr/bin/getconf "$@"\nfi\n'
-  write_executable "$fakebin/git" $'#!/usr/bin/env bash\nset -euo pipefail\n\nif [ "${1:-}" = "-C" ]; then\n  shift 2\nfi\n\nif [ "${1:-}" != "status" ]; then\n  printf \'unsupported fake git command: %s\\n\' "${1:-}" >&2\n  exit 1\nfi\n\nlock_dir="${REPOHEALTH_TEST_LOCK_DIR:?}"\nactive_file="${REPOHEALTH_TEST_ACTIVE_FILE:?}"\nmax_file="${REPOHEALTH_TEST_MAX_FILE:?}"\n\nlock() {\n  while ! mkdir "$lock_dir" 2>/dev/null; do\n    sleep 0.01\n  done\n}\n\nunlock() {\n  rmdir "$lock_dir"\n}\n\nlock\nactive="$(cat "$active_file" 2>/dev/null || printf \'0\')"\nactive=$((active + 1))\nprintf \'%s\\n\' "$active" >"$active_file"\nmax_active="$(cat "$max_file" 2>/dev/null || printf \'0\')"\nif [ "$active" -gt "$max_active" ]; then\n  printf \'%s\\n\' "$active" >"$max_file"\nfi\nunlock\n\nsleep 0.25\n\nlock\nactive="$(cat "$active_file" 2>/dev/null || printf \'0\')"\nif [ "$active" -gt 0 ]; then\n  active=$((active - 1))\nfi\nprintf \'%s\\n\' "$active" >"$active_file"\nunlock\n\nprintf \'# branch.oid %s\\n\' \'0123456789abcdef0123456789abcdef01234567\'\nprintf \'# branch.head main\\n\'\nprintf \'# branch.upstream origin/main\\n\'\nprintf \'# branch.ab +0 -0\\n\'\n'
+  write_executable "$fakebin/git" $'#!/usr/bin/env bash\nset -euo pipefail\n\nwhile [ "${1:-}" = "-c" ]; do shift 2; done\nif [ "${1:-}" = "-C" ]; then\n  shift 2\nfi\n\nif [ "${1:-}" = "config" ]; then exit 1; fi\nif [ "${1:-}" != "status" ]; then\n  printf \'unsupported fake git command: %s\\n\' "${1:-}" >&2\n  exit 1\nfi\n\nlock_dir="${REPOHEALTH_TEST_LOCK_DIR:?}"\nactive_file="${REPOHEALTH_TEST_ACTIVE_FILE:?}"\nmax_file="${REPOHEALTH_TEST_MAX_FILE:?}"\n\nlock() {\n  while ! mkdir "$lock_dir" 2>/dev/null; do\n    sleep 0.01\n  done\n}\n\nunlock() {\n  rmdir "$lock_dir"\n}\n\nlock\nactive="$(cat "$active_file" 2>/dev/null || printf \'0\')"\nactive=$((active + 1))\nprintf \'%s\\n\' "$active" >"$active_file"\nmax_active="$(cat "$max_file" 2>/dev/null || printf \'0\')"\nif [ "$active" -gt "$max_active" ]; then\n  printf \'%s\\n\' "$active" >"$max_file"\nfi\nunlock\n\nsleep 0.25\n\nlock\nactive="$(cat "$active_file" 2>/dev/null || printf \'0\')"\nif [ "$active" -gt 0 ]; then\n  active=$((active - 1))\nfi\nprintf \'%s\\n\' "$active" >"$active_file"\nunlock\n\nprintf \'# branch.oid %s\\n\' \'0123456789abcdef0123456789abcdef01234567\'\nprintf \'# branch.head main\\n\'\nprintf \'# branch.upstream origin/main\\n\'\nprintf \'# branch.ab +0 -0\\n\'\n'
 
   local status=0
   set +e
@@ -576,16 +576,19 @@ assert_path_display() {
 
 assert_repo_name_is_not_evaluated() {
   local workspace="$TMP_ROOT/crafted-name-workspace"
-  local repo="$workspace/a"$'\n''REPO_ROOTS[$(warn INJECTED)]'$'\t''a'
+  local repo="$workspace/a"$'\n''forged'$'\t''REPO_TYPES[$(printf injected > "$REPOHEALTH_TEST_SORT_MARKER")]'
+  local marker="$TMP_ROOT/sort.marker"
   local stdout_file="$TMP_ROOT/crafted-name.stdout"
   local stderr_file="$TMP_ROOT/crafted-name.stderr"
   local status_file="$TMP_ROOT/crafted-name.status"
 
   # Some filesystems or Git builds reject newlines in paths; there is nothing to check there.
   { mkdir -p "$repo" && git init -q "$repo"; } >/dev/null 2>&1 || return 0
-  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --filter all "$workspace"
+  init_git_repo "$workspace/ordinary"
+  REPOHEALTH_TEST_SORT_MARKER="$marker" run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --filter all "$workspace"
+  [ ! -e "$marker" ] || fail "expected sort keys to remain data"
   [ ! -s "$stderr_file" ] || fail "expected a crafted repo name to render as data without errors"
-  grep -F 'REPO_ROOTS[$(warn INJECTED)]' "$stdout_file" >/dev/null || fail "expected the crafted repo to be listed"
+  grep -F 'REPO_TYPES[$(printf injected' "$stdout_file" >/dev/null || fail "expected the crafted repo to be listed"
 }
 
 assert_json_paths_stable() {
@@ -711,7 +714,7 @@ assert_jj_work_state_uses_diff_only() {
 
   write_executable "$fakebin/jj" $'#!/usr/bin/env bash\nset -euo pipefail\ncalls_file="${REPOHEALTH_TEST_JJ_CALLS_FILE:?}"\nprintf \'%s\\n\' "$*" >>"$calls_file"\n\nif [ "${1:-}" != "-R" ]; then\n  printf \'unexpected jj invocation: %s\\n\' "$*" >&2\n  exit 1\nfi\nroot="${2:-}"\nrepo_name="${root##*/}"\nshift 2\n\ncase "${1:-}" in\n  status)\n    printf \'jj status should not be called\\n\' >&2\n    exit 99\n    ;;\n  diff)\n    if [ "${2:-}" != "--name-only" ]; then\n      printf \'unexpected jj diff invocation: %s\\n\' "$*" >&2\n      exit 1\n    fi\n    case "$repo_name" in\n      jj-clean)\n        exit 0\n        ;;\n      jj-dirty)\n        printf \'alpha.txt\\nbeta.txt\\n\'\n        exit 0\n        ;;\n      mixed)\n        printf \'jj diff should not run for mixed repo\\n\' >&2\n        exit 88\n        ;;\n    esac\n    ;;\n  log)\n    if [ "${3:-}" = "--count" ] || [ "${4:-}" = "--count" ]; then\n      printf \'0\\n\'\n      exit 0\n    fi\n    exit 0\n    ;;\n  git)\n    if [ "${2:-}" = "remote" ]; then\n      exit 0\n    fi\n    printf \'unexpected jj git invocation: %s\\n\' "$*" >&2\n    exit 1\n    ;;\n esac\n\nprintf \'unexpected jj invocation: %s\\n\' "$*" >&2\nexit 1\n'
 
-  write_executable "$fakebin/git" $'#!/usr/bin/env bash\nset -euo pipefail\ncalls_file="${REPOHEALTH_TEST_GIT_CALLS_FILE:?}"\nprintf \'%s\\n\' "$*" >>"$calls_file"\n\nroot=""\nif [ "${1:-}" = "-C" ]; then\n  root="${2:-}"\n  shift 2\nfi\n\ncase "${1:-}" in\n  status)\n    if [ "${root##*/}" = "mixed" ]; then\n      printf \' M tracked.txt\\n\'\n    fi\n    exit 0\n    ;;\n esac\n\nprintf \'unexpected git invocation: %s\\n\' "$*" >&2\nexit 1\n'
+  write_executable "$fakebin/git" $'#!/usr/bin/env bash\nset -euo pipefail\ncalls_file="${REPOHEALTH_TEST_GIT_CALLS_FILE:?}"\nprintf \'%s\\n\' "$*" >>"$calls_file"\n\nroot=""\nwhile [ "${1:-}" = "-c" ]; do shift 2; done\nif [ "${1:-}" = "-C" ]; then\n  root="${2:-}"\n  shift 2\nfi\n\ncase "${1:-}" in\n  config) exit 1 ;;\n  status)\n    if [ "${root##*/}" = "mixed" ]; then\n      printf \' M tracked.txt\\n\'\n    fi\n    exit 0\n    ;;\n esac\n\nprintf \'unexpected git invocation: %s\\n\' "$*" >&2\nexit 1\n'
 
   local status=0
   set +e
@@ -741,7 +744,7 @@ assert_jj_work_state_uses_diff_only() {
   if grep -F -- "$workspace/mixed diff --name-only" "$jj_calls_file" >/dev/null 2>&1; then
     fail "expected mixed repo to skip jj diff work-state collection"
   fi
-  grep -E -- '-C .*/mixed status --porcelain=v1 --untracked-files=normal$' "$git_calls_file" >/dev/null || fail "expected mixed repo to use git status for work-state fallback"
+  grep -E -- '-C .*/mixed status --ignore-submodules=dirty --porcelain=v1 --untracked-files=normal$' "$git_calls_file" >/dev/null || fail "expected mixed repo to use git status for work-state fallback"
 }
 
 assert_colocated_repo_without_jj_uses_git_work_state() {
@@ -1454,6 +1457,287 @@ assert_posix_installer() {
     fail "expected repeated POSIX installation to add one PATH entry, saw $path_line_count"
 }
 
+assert_git_callbacks_are_disabled() {
+  local workspace="$TMP_ROOT/callback-workspace" fakebin="$TMP_ROOT/callback-bin"
+  local repo="$workspace/committed" unborn="$workspace/unborn"
+  local marker="$TMP_ROOT/callback.marker" callback="$TMP_ROOT/callback.sh"
+  local stdout_file="$TMP_ROOT/callback.stdout" stderr_file="$TMP_ROOT/callback.stderr"
+  local hooks_dir="$TMP_ROOT/callback-hooks"
+  local status_file="$TMP_ROOT/callback.status" before_index jobs layout
+  mkdir -p "$fakebin"
+  write_executable "$callback" $'#!/bin/sh\nprintf called >>"$REPOHEALTH_TEST_CALLBACK_MARKER"\n'
+  write_executable "$fakebin/jj" $'#!/bin/sh\nshift 2\ncase "$1" in\n  log) printf "0\\n" ;;\n  git) exit 0 ;;\n  *) exit 1 ;;\nesac\n'
+
+  init_bare_repo "$TMP_ROOT/callback-remote.git"
+  init_git_repo "$repo"
+  write_file "$repo/file.txt" $'base\n'
+  write_file "$repo/.gitattributes" $'file.txt filter=probe diff=probe\n'
+  commit_all "$repo" "Base" "2024-01-01T00:00:00 +0000"
+  git -C "$repo" remote add origin "$TMP_ROOT/callback-remote.git"
+  git -C "$repo" push -u origin main >/dev/null 2>&1
+  write_file "$repo/file.txt" $'base\noutgoing\n'
+  commit_all "$repo" "Outgoing" "2024-01-02T00:00:00 +0000"
+  write_file "$repo/file.txt" $'base\noutgoing\nworktree\n'
+  mkdir -p "$hooks_dir"
+  cp "$callback" "$hooks_dir/post-index-change"
+  git -C "$repo" config core.hooksPath "$hooks_dir"
+  git -C "$repo" config core.fsmonitor "$callback"
+  git -C "$repo" config filter.probe.clean "\"$callback\"; cat"
+  git -C "$repo" config filter.probe.required true
+  git -C "$repo" config diff.probe.command "$callback"
+  git -C "$repo" config diff.probe.textconv "$callback"
+
+  # A clone transfers objects and refs, not the source's executable local configuration.
+  git clone -q "$repo" "$TMP_ROOT/callback-clone" >/dev/null 2>&1
+  if git -C "$TMP_ROOT/callback-clone" config --get core.fsmonitor >/dev/null; then
+    fail "expected a normal clone not to copy source .git/config callbacks"
+  fi
+
+  init_git_repo "$unborn"
+  write_file "$unborn/file.txt" $'staged\n'
+  write_file "$unborn/.gitattributes" $'file.txt filter=process-probe\n'
+  git -C "$unborn" add -A
+  before_index="$(cksum <"$unborn/.git/index")"
+  write_file "$unborn/file.txt" $'staged\nunstaged\n'
+  git -C "$unborn" config core.fsmonitor "$callback"
+  git -C "$unborn" config filter.process-probe.process "$callback"
+  git -C "$unborn" config filter.process-probe.required true
+
+  for layout in git colocated; do
+    if [ "$layout" = colocated ]; then mkdir -p "$repo/.jj"; fi
+    for jobs in 1 3; do
+      rm -f "$marker"
+      env LC_ALL=C COLUMNS=80 NO_COLOR=1 PATH="$fakebin:$PATH" \
+        REPOHEALTH_TEST_CALLBACK_MARKER="$marker" \
+        "$CLI" --jobs "$jobs" --filter all --output json --detail "$workspace" \
+        >"$stdout_file" 2>"$stderr_file" || fail "callback scan failed ($layout, jobs=$jobs)"
+      [ ! -e "$marker" ] || fail "scan executed a Git callback ($layout, jobs=$jobs)"
+      [ ! -s "$stderr_file" ] || fail "callback scan produced warnings"
+      grep -F '"added": 1,' "$stdout_file" >/dev/null || fail "expected unborn staged file details"
+      [ "$before_index" = "$(cksum <"$unborn/.git/index")" ] || fail "scan modified the unborn index"
+    done
+  done
+
+  # Invalid config must fail closed, before status can execute callbacks.
+  printf '\n[invalid\n' >>"$unborn/.git/config"
+  run_cli "$stdout_file" "$stderr_file" "$status_file" --jobs 1 --filter all --output json --check "$unborn"
+  [ "$(cat "$status_file")" -eq 1 ] || fail "expected malformed configuration to fail --check"
+  grep -F 'Git configuration check failed' "$stderr_file" >/dev/null || fail "expected a config warning"
+}
+
+assert_git_filter_names_fail_closed() {
+  local workspace="$TMP_ROOT/equals-workspace" repo="$TMP_ROOT/equals-workspace/repo"
+  local marker="$TMP_ROOT/equals.marker" mode stdout_file="$TMP_ROOT/equals.stdout"
+  local stderr_file="$TMP_ROOT/equals.stderr" status_file="$TMP_ROOT/equals.status"
+  init_git_repo "$repo"
+  write_file "$repo/file.txt" $'base\n'
+  write_file "$repo/.gitattributes" $'file.txt filter=probe=x\n'
+  commit_all "$repo" "Base" "2024-01-01T00:00:00 +0000"
+  write_file "$repo/file.txt" $'changed\n'
+  for mode in clean process; do
+    git -C "$repo" config "filter.probe=x.$mode" 'printf called > "$REPOHEALTH_TEST_CALLBACK_MARKER"'
+    git -C "$repo" config 'filter.probe=x.required' true
+    env REPOHEALTH_TEST_CALLBACK_MARKER="$marker" \
+      "$CLI" --jobs 1 --filter all --no-color --output json --detail "$workspace" \
+      >"$stdout_file" 2>"$stderr_file" || fail "equals-key scan unexpectedly failed"
+    [ ! -e "$marker" ] || fail "equals-key $mode filter executed"
+    grep -F 'Git configuration check failed' "$stderr_file" >/dev/null || fail "equals-key scan did not fail closed"
+    grep -F '"kind": "error"' "$stdout_file" >/dev/null || fail "equals-key scan did not report an error"
+    git -C "$repo" config --unset "filter.probe=x.$mode"
+  done
+}
+
+assert_git_submodule_callbacks_are_disabled() {
+  local source="$TMP_ROOT/submodule-source" repo="$TMP_ROOT/submodule-parent"
+  local marker="$TMP_ROOT/submodule.marker" stdout_file="$TMP_ROOT/submodule.stdout"
+  local stderr_file="$TMP_ROOT/submodule.stderr" dirty
+  init_git_repo "$source"
+  write_file "$source/file.txt" $'base\n'
+  write_file "$source/.gitattributes" $'file.txt filter=submodule-only\n'
+  commit_all "$source" "Base" "2024-01-01T00:00:00 +0000"
+  init_git_repo "$repo"
+  write_file "$repo/file.txt" $'base\n'
+  git -C "$repo" -c protocol.file.allow=always submodule add -q "$source" sub >/dev/null 2>&1
+  commit_all "$repo" "Submodule" "2024-01-02T00:00:00 +0000"
+  git -C "$repo" config submodule.sub.ignore none
+  git -C "$repo/sub" config filter.submodule-only.clean 'printf called > "$REPOHEALTH_TEST_CALLBACK_MARKER"; cat'
+  # A same-size edit forces a content check instead of a stat-only dirty result.
+  write_file "$repo/sub/file.txt" $'evil\n'
+  touch -t 202001010000 "$repo/sub/file.txt"
+  for dirty in 0 1; do
+    if [ "$dirty" -eq 1 ]; then write_file "$repo/file.txt" $'parent edit\n'; fi
+    env LC_ALL=C NO_COLOR=1 REPOHEALTH_TEST_CALLBACK_MARKER="$marker" \
+      "$CLI" --jobs 1 --filter all --output json --paths relative --detail "$repo" \
+      >"$stdout_file" 2>"$stderr_file" || fail "submodule scan failed"
+    [ ! -e "$marker" ] || fail "scan executed a submodule-only filter"
+    [ ! -s "$stderr_file" ] || fail "submodule scan wrote warnings"
+    if command -v python3 >/dev/null 2>&1; then
+      python3 - "$stdout_file" "$dirty" <<'PYJSON' || fail "unexpected submodule work state"
+import json, sys
+with open(sys.argv[1]) as stream:
+    repos = {repo['path']: repo for repo in json.load(stream)['repos']}
+assert repos['.']['work']['kind'] == ('changes' if sys.argv[2] == '1' else 'clean')
+assert repos['sub']['work']['text'] == '* 1 modified'
+PYJSON
+    fi
+  done
+}
+
+assert_git_signature_and_transport_callbacks_are_disabled() {
+  local repo="$TMP_ROOT/signature-repo" partial="$TMP_ROOT/partial-repo"
+  local fakebin="$TMP_ROOT/legacy-git-bin" real_git
+  local marker="$TMP_ROOT/extra-callback.marker" callback="$TMP_ROOT/extra-callback.sh"
+  local stdout_file="$TMP_ROOT/extra-callback.stdout" stderr_file="$TMP_ROOT/extra-callback.stderr"
+  local base tree commit blob output
+  write_executable "$callback" $'#!/bin/sh\nprintf called >"$REPOHEALTH_TEST_CALLBACK_MARKER"\nexit 1\n'
+  init_git_repo "$repo"
+  write_file "$repo/file.txt" $'base\n'
+  commit_all "$repo" "Base" "2024-01-01T00:00:00 +0000"
+  base="$(git -C "$repo" rev-parse HEAD)"
+  tree="$(git -C "$repo" rev-parse 'HEAD^{tree}')"
+  # An invalid synthetic signature exercises verifier dispatch without a key or real signature.
+  commit="$(printf 'tree %s\nparent %s\nauthor Synthetic <synthetic@example.invalid> 1704067200 +0000\ncommitter Synthetic <synthetic@example.invalid> 1704067200 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n synthetic-signature\n -----END PGP SIGNATURE-----\n\nSigned outgoing\n' "$tree" "$base" |
+    git -C "$repo" hash-object -w -t commit --stdin)"
+  git -C "$repo" update-ref refs/remotes/origin/main "$base"
+  git -C "$repo" update-ref refs/heads/main "$commit"
+  git -C "$repo" config remote.origin.url ./unused
+  git -C "$repo" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+  git -C "$repo" config branch.main.remote origin
+  git -C "$repo" config branch.main.merge refs/heads/main
+  git -C "$repo" config log.showSignature true
+  git -C "$repo" config gpg.program "$callback"
+  for output in detail json; do
+    env LC_ALL=C NO_COLOR=1 REPOHEALTH_TEST_CALLBACK_MARKER="$marker" \
+      "$CLI" --jobs 1 --filter all --detail --output "$output" "$repo" \
+      >"$stdout_file" 2>"$stderr_file" || fail "signed outgoing scan failed"
+    [ ! -e "$marker" ] || fail "scan executed a signature verifier"
+    grep -F 'Signed outgoing' "$stdout_file" >/dev/null || fail "expected signed outgoing commit details"
+  done
+
+  init_git_repo "$partial"
+  write_file "$partial/file.txt" $'base\n'
+  commit_all "$partial" "Base" "2024-01-01T00:00:00 +0000"
+  blob="$(git -C "$partial" rev-parse HEAD:file.txt)"
+  rm "$partial/.git/objects/${blob:0:2}/${blob:2}"
+  git -C "$partial" config remote.origin.url ssh://example.invalid/repo
+  git -C "$partial" config remote.origin.promisor true
+  git -C "$partial" config extensions.partialClone origin
+  git -C "$partial" config core.sshCommand "$callback"
+  write_file "$partial/file.txt" $'changed size\n'
+  env LC_ALL=C NO_COLOR=1 REPOHEALTH_TEST_CALLBACK_MARKER="$marker" \
+    "$CLI" --jobs 1 --filter all --detail "$partial" >"$stdout_file" 2>"$stderr_file" || fail "partial scan failed"
+  [ ! -e "$marker" ] || fail "scan invoked a transport for a missing object"
+  # Model old Git ignoring GIT_NO_LAZY_FETCH; the production wrapper must deny transports itself.
+  real_git="$(command -v git)"
+  mkdir -p "$fakebin"
+  write_executable "$fakebin/git" $'#!/bin/sh\nGIT_NO_LAZY_FETCH=0\nexport GIT_NO_LAZY_FETCH\nexec "$REPOHEALTH_TEST_REAL_GIT" "$@"\n'
+  env LC_ALL=C NO_COLOR=1 PATH="$fakebin:$PATH" REPOHEALTH_TEST_REAL_GIT="$real_git" \
+    REPOHEALTH_TEST_CALLBACK_MARKER="$marker" \
+    "$CLI" --jobs 1 --filter all --detail "$partial" >"$stdout_file" 2>"$stderr_file" || fail "legacy partial scan failed"
+  [ ! -e "$marker" ] || fail "scan wrapper did not deny legacy lazy-fetch transport"
+}
+
+assert_git_upstream_is_not_an_option() {
+  local repo="$TMP_ROOT/upstream-option-repo" base output
+  local stdout_file="$TMP_ROOT/upstream-option.stdout" stderr_file="$TMP_ROOT/upstream-option.stderr"
+  init_git_repo "$repo"
+  write_file "$repo/file.txt" $'base\n'
+  commit_all "$repo" "Base" "2024-01-01T00:00:00 +0000"
+  base="$(git -C "$repo" rev-parse HEAD)"
+  write_file "$repo/file.txt" $'base\noutgoing\n'
+  commit_all "$repo" "Outgoing option probe" "2024-01-02T00:00:00 +0000"
+  git -C "$repo" update-ref refs/heads/--output=marker "$base"
+  git -C "$repo" config branch.main.remote .
+  git -C "$repo" config branch.main.merge refs/heads/--output=marker
+  for output in detail json; do
+    env LC_ALL=C NO_COLOR=1 "$CLI" --jobs 1 --filter all --detail --output "$output" "$repo" \
+      >"$stdout_file" 2>"$stderr_file" || fail "option-like upstream scan failed"
+    [ ! -e "$repo/marker..HEAD" ] || fail "upstream was interpreted as a Git output option"
+    [ ! -s "$stderr_file" ] || fail "option-like upstream scan wrote warnings"
+    grep -F 'Outgoing option probe' "$stdout_file" >/dev/null || fail "expected outgoing details for option-like upstream"
+  done
+}
+
+assert_malformed_numstat_is_not_evaluated() {
+  local workspace="$TMP_ROOT/malformed-stats" fakebin="$TMP_ROOT/malformed-bin"
+  local stdout_file="$TMP_ROOT/malformed.stdout" stderr_file="$TMP_ROOT/malformed.stderr"
+  local marker="$TMP_ROOT/malformed.marker" output oversized
+  mkdir -p "$workspace/repo/.jj" "$fakebin"
+  write_executable "$fakebin/jj" $'#!/bin/sh\nshift 2\ncase "$1" in\n git) exit 0 ;;\n diff) printf "ordinary\\n" ;;\n log) case "$*" in\n  *--count*) printf "0\\n" ;;\n  *) printf \'1\\t0\\tordinary\\nREPO_TYPES[$(printf injected > "$REPOHEALTH_TEST_CALLBACK_MARKER")]\\t0\\tfile\\n08\\t0\\tinvalid-number\\n2147483647\\t2147483647\\tlarge-file\\n\'\n    if [ "${REPOHEALTH_TEST_OVERSIZED_STATS:-0}" = 1 ]; then\n      printf \'4000000000000000000\\t14446744073709551617\\tforged-overflow\\n1\\t14446744073709551617\\toversize-removed\\n2147483648\\t0\\tover-boundary\\n\'\n    fi ;;\n esac ;;\n *) exit 1 ;;\nesac\n'
+  for output in detail fancy-detail json; do
+    # Oversized fields use JSON only: a broken validator must not launch an unbounded bar loop in this test.
+    oversized=0
+    [ "$output" != json ] || oversized=1
+    env LC_ALL=C NO_COLOR=1 PATH="$fakebin:$PATH" REPOHEALTH_TEST_CALLBACK_MARKER="$marker" \
+      REPOHEALTH_TEST_OVERSIZED_STATS="$oversized" \
+      "$CLI" --jobs 1 --filter all --detail --output "$output" "$workspace" \
+      >"$stdout_file" 2>"$stderr_file" || fail "malformed numstat scan failed"
+    [ ! -e "$marker" ] || fail "malformed stat count was evaluated as shell arithmetic"
+    [ ! -s "$stderr_file" ] || fail "malformed numstat scan wrote warnings"
+    if [ "$output" = json ] && command -v python3 >/dev/null 2>&1; then
+      python3 - "$stdout_file" <<'PYJSON' || fail "malformed numstat corrupted JSON"
+import json, sys
+with open(sys.argv[1]) as stream:
+    data = json.load(stream)
+files = {item['path']: item for item in data['repos'][0]['work']['detail']}
+assert set(files) == {'ordinary', 'large-file'}
+assert files['large-file']['added'] == files['large-file']['removed'] == 2147483647
+PYJSON
+    fi
+  done
+}
+
+assert_control_byte_output() {
+  local LC_ALL=C
+  local workspace="$TMP_ROOT/control-workspace" name='control-' code char
+  local stdout_file="$TMP_ROOT/control.stdout" stderr_file="$TMP_ROOT/control.stderr"
+  local status_file="$TMP_ROOT/control.status" output width
+  for code in {1..31} 127; do
+    printf -v char '\\%03o' "$code"
+    printf -v char '%b' "$char"
+    name="$name$char"
+  done
+  name="$name-end"$'\n'
+  # Windows filesystems may reject these names. Keep the other security tests portable.
+  if ! { mkdir -p "$workspace/$name" && git init -q "$workspace/$name"; } >/dev/null 2>&1; then
+    printf 'Skipping control-byte paths: filesystem or Git rejects the fixture.\n'
+    return
+  fi
+  init_git_repo "$workspace/ordinary"
+  for output in table minimal detail fancy-detail json; do
+    for width in 80 40; do
+      env LC_ALL=C COLUMNS="$width" NO_COLOR=1 "$CLI" --jobs 3 --filter all --output "$output" "$workspace" \
+        >"$stdout_file" 2>"$stderr_file" || fail "control-byte scan failed ($output, width=$width)"
+      [ ! -s "$stderr_file" ] || fail "control-byte scan wrote unexpected stderr"
+      if LC_ALL=C tr -d '\n' <"$stdout_file" | LC_ALL=C grep '[[:cntrl:]]' >/dev/null; then
+        fail "raw control byte reached $output output"
+      fi
+      if [ "$output" = table ]; then
+        local rule
+        rule="$(sed -n '3p' "$stdout_file")"
+        [ "${#rule}" -eq $((width * 2)) ] || fail "expected the control table rule to honor COLUMNS=$width"
+      fi
+      if [ "$width" -eq 80 ]; then
+        compare_file "control $output stdout" "$FIXTURES_DIR/control-$output.stdout" "$stdout_file"
+      fi
+      if [ "$output" != json ]; then
+        grep -F '\x1b' "$stdout_file" >/dev/null || fail "expected inert escape notation in $output"
+        grep -F 'ordinary' "$stdout_file" >/dev/null || fail "control path corrupted the other row"
+      elif command -v python3 >/dev/null 2>&1; then
+        python3 - "$stdout_file" "$name" <<'PYJSON' || fail "JSON control-byte round trip failed"
+import json, sys
+with open(sys.argv[1]) as stream:
+    data = json.load(stream)
+assert {repo['path'] for repo in data['repos']} == {sys.argv[2], 'ordinary'}
+PYJSON
+      fi
+    done
+  done
+  # Error paths must use the same terminal escaping as rows.
+  run_cli "$stdout_file" "$stderr_file" "$status_file" "$workspace/missing"$'\033\b'
+  grep -F '\x1b\x08' "$stderr_file" >/dev/null || fail "expected escaped control bytes in diagnostics"
+}
+
 assert_installer_paths_are_literal() {
   local fakebin="$TMP_ROOT/install-fakebin" source="$TMP_ROOT/install-source/repohealth"
   local home_dir="$TMP_ROOT/literal-home" install_dir stdout_file="$TMP_ROOT/literal.stdout"
@@ -1746,6 +2030,13 @@ main() {
   assert_missing_dependencies_fail_early
   assert_posix_installer
   assert_installer_paths_are_literal
+  assert_git_callbacks_are_disabled
+  assert_git_filter_names_fail_closed
+  assert_git_submodule_callbacks_are_disabled
+  assert_git_signature_and_transport_callbacks_are_disabled
+  assert_git_upstream_is_not_an_option
+  assert_malformed_numstat_is_not_evaluated
+  assert_control_byte_output
   assert_self_update
 
   # multi-directory: scan two separate roots

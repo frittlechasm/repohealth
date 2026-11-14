@@ -167,4 +167,19 @@ For scripts, use JSON detail output:
 
 ## Security
 
+Git scans disable hooks (including fsmonitor), clean/process filters, external diffs, and text conversion commands without changing repository configuration.
+They also disable signature verification and transport access, including lazy fetching of missing objects from partial clones.
+Detail statistics can be unavailable when the required objects are missing locally.
+Filter configuration keys containing `=` cannot be overridden safely and cause a scan error.
+Filtered files, such as Git LFS files, may appear modified because scans compare their unfiltered contents.
+For a repository without a first commit, detail statistics show staged content; scans never stage files to generate statistics.
+Statistics omit rows with invalid counts or more than 2147483647 added or removed lines.
+Superproject rows show only submodule commit-pointer changes. Submodule working-copy changes need a separately discovered repository row.
+Skipped directories, `--depth`, and `--exclude` can hide submodule rows; the parent row does not cover their working-copy state.
+Scan those submodule directories directly when needed.
+
+Executing repository-local Git callbacks requires a complete repository with attacker-controlled metadata that Git accepts for the current user.
+Ordinary clones do not transfer the source repository's `.git/config`. Restored repositories and shared workspaces can retain that configuration.
+
+Human output displays C0 control bytes and DEL as visible `\xNN` sequences before calculating widths. JSON escapes those bytes and preserves path values.
 The POSIX installer quotes install paths literally in shell profiles and manual PATH instructions, and rejects newline and carriage-return characters.

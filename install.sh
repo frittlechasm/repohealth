@@ -99,14 +99,18 @@ require_runtime_dependencies() {
   fi
 }
 
+shell_quote() {
+  quoted="$(printf '%s\n' "$1" | sed "s/'/'\\\\''/g")"
+  printf "'%s'" "$quoted"
+}
+
 add_path_line() {
   profile="$1"
-  path_line="export PATH=\"$install_dir:\$PATH\""
 
   mkdir -p "$(dirname "$profile")" || return 1
   touch "$profile" || return 1
 
-  if grep -F "$path_line" "$profile" >/dev/null 2>&1; then
+  if grep -Fx "$path_line" "$profile" >/dev/null 2>&1; then
     profile_updated=1
     return 0
   fi
@@ -186,7 +190,12 @@ done
 [ -n "${HOME:-}" ] || [ -n "${REPOHEALTH_INSTALL_DIR:-}" ] || die "HOME is unset; set REPOHEALTH_INSTALL_DIR"
 [ -n "$install_dir" ] || die "install directory is empty"
 [ -n "$bin_name" ] || die "binary name is empty"
+case "$install_dir" in
+*'
+'* | *"$(printf '\r')"*) die "install directory must not contain a newline or carriage return" ;;
+esac
 require_runtime_dependencies
+path_line="export PATH=$(shell_quote "$install_dir"):\"\$PATH\""
 
 case "$bin_name" in
 */*) die "binary name must not contain /" ;;
@@ -224,9 +233,9 @@ if ensure_path_setup; then
   if [ "$profile_updated" -eq 1 ]; then
     info "Updated your shell profile so $bin_name is available from new terminals."
     info "Run this once in the current terminal to use it now:"
-    info "  export PATH=\"$install_dir:\$PATH\""
+    info "  $path_line"
   fi
 else
   info "Add this directory to PATH to run $bin_name from any terminal:"
-  info "  export PATH=\"$install_dir:\$PATH\""
+  info "  $path_line"
 fi

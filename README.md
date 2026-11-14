@@ -26,7 +26,9 @@ Windows PowerShell:
 iwr https://raw.githubusercontent.com/frittlechasm/repohealth/main/install.ps1 -UseB | iex
 ```
 
-By default, macOS and Linux install to `~/.local/bin/repohealth` and update your shell profile when that directory is not already on `PATH`. Windows installs to `%LOCALAPPDATA%\Programs\repohealth`, creates a `repohealth.cmd` launcher, and adds that directory to the current session and user `PATH`. Open a new terminal after installation if your shell does not pick up `PATH` changes immediately.
+By default, macOS and Linux install to `~/.local/bin/repohealth` and update your shell profile when that directory is not already on `PATH`. Windows
+installs to `%LOCALAPPDATA%\Programs\repohealth`, creates a `repohealth.cmd` launcher, and adds that directory to the current session and user `PATH`.
+Open a new terminal after installation if your shell does not pick up `PATH` changes immediately.
 
 To choose a directory:
 
@@ -40,7 +42,8 @@ $env:REPOHEALTH_INSTALL_DIR="$HOME\bin"; iwr https://raw.githubusercontent.com/f
 
 For a local checkout, `chmod +x ./repohealth` is enough.
 
-Requires `bash`, `find`, `awk`, and `git`. repohealth checks these at startup and exits with OS-specific install instructions before scanning if any are missing. On Windows, install Git for Windows or another Bash provider first. Optionally `jj` for Jujutsu repos, `fd` for faster discovery.
+Requires `bash`, `find`, `awk`, and `git`. repohealth checks these at startup and exits with OS-specific install instructions before scanning if any
+are missing. On Windows, install Git for Windows or another Bash provider first. Optionally `jj` for Jujutsu repos, `fd` for faster discovery.
 
 ## Usage
 
@@ -118,7 +121,8 @@ JSON and detail output call new files `untracked`.
 
 ### Filters
 
-Filters limit which repos appear in the list. Without `--filter`, repohealth shows repos with uncommitted, unpushed, or unpulled changes, plus repos whose status check failed.
+Filters limit which repos appear in the list. Without `--filter`, repohealth shows repos with uncommitted, unpushed, or unpulled changes, plus repos
+whose status check failed.
 
 | Filter | Shows |
 |--------|-------|
@@ -160,3 +164,7 @@ For scripts, use JSON detail output:
 - Uses `fd`/`fdfind` when available for faster traversal, falls back to `find`.
 - Skips `node_modules`, `vendor`, `target`, `__pycache__`, `.svn`, `.hg`, and linked Git worktrees.
 - Repo rows go to stdout; warnings and errors go to stderr.
+
+## Security
+
+The POSIX installer quotes install paths literally in shell profiles and manual PATH instructions, and rejects newline and carriage-return characters.

@@ -1419,7 +1419,7 @@ assert_posix_installer() {
     fail "expected POSIX installer to report installed path"
   grep -F "Updated your shell profile so repohealth-dev is available from new terminals." "$stderr_file" >/dev/null ||
     fail "expected POSIX installer to report automatic PATH setup"
-  grep -F "export PATH=\"$install_root/bin:\$PATH\"" "$profile_file" >/dev/null ||
+  grep -F "export PATH='$install_root/bin':\"\$PATH\"" "$profile_file" >/dev/null ||
     fail "expected POSIX installer to add install dir to shell profile"
 
   "$target" --help >"$stdout_file" 2>"$stderr_file" ||
@@ -1449,9 +1449,44 @@ assert_posix_installer() {
   [ -x "$fallback_target" ] || fail "expected POSIX installer fallback to create executable target"
   grep -F '# Existing profile content' "$fallback_profile" >/dev/null ||
     fail "expected POSIX installer fallback to preserve existing .profile content"
-  path_line_count="$(grep -Fxc "export PATH=\"$install_root/bin:\$PATH\"" "$fallback_profile" || true)"
+  path_line_count="$(grep -Fxc "export PATH='$install_root/bin':\"\$PATH\"" "$fallback_profile" || true)"
   [ "$path_line_count" -eq 1 ] ||
     fail "expected repeated POSIX installation to add one PATH entry, saw $path_line_count"
+}
+
+assert_installer_paths_are_literal() {
+  local fakebin="$TMP_ROOT/install-fakebin" source="$TMP_ROOT/install-source/repohealth"
+  local home_dir="$TMP_ROOT/literal-home" install_dir stdout_file="$TMP_ROOT/literal.stdout"
+  local stderr_file="$TMP_ROOT/literal.stderr" shell_name profile result before_calls path_value
+  # Exercise quotes, substitutions, backticks, dollars, backslashes, and spaces together.
+  install_dir="$TMP_ROOT/"'bin '\'\"'$(printf injected > "$HOME/substitution") `printf injected > "$HOME/backtick"` $HOME \'
+  mkdir -p "$home_dir"
+  for shell_name in sh bash zsh; do
+    command -v "$shell_name" >/dev/null 2>&1 || continue
+    env LC_ALL=C PATH="$fakebin:$PATH" HOME="$home_dir" SHELL="/bin/$shell_name" \
+      REPOHEALTH_TEST_SOURCE="$source" REPOHEALTH_TEST_CURL_CALLS="$TMP_ROOT/install-curl.calls" \
+      REPOHEALTH_BASE_URL="https://example.invalid/repohealth/test-ref" \
+      sh "$INSTALL_SH" --dir "$install_dir" >"$stdout_file" 2>"$stderr_file" || fail "literal path installation failed"
+    case "$shell_name" in
+    zsh) profile="$home_dir/.zshrc" ;;
+    bash) profile="$home_dir/.bash_profile" ;;
+    *) profile="$home_dir/.profile" ;;
+    esac
+    result="$(env HOME="$home_dir" PATH=/usr/bin:/bin "$shell_name" -c '. "$1"; printf "%s" "$PATH"' sh "$profile")"
+    [ "$result" = "$install_dir:/usr/bin:/bin" ] || fail "profile did not preserve the literal install path ($shell_name)"
+    [ ! -e "$home_dir/substitution" ] && [ ! -e "$home_dir/backtick" ] || fail "profile executed path content"
+    grep '^  export PATH=' "$stderr_file" >"$home_dir/manual"
+    result="$(env HOME="$home_dir" PATH=/usr/bin:/bin "$shell_name" -c '. "$1"; printf "%s" "$PATH"' sh "$home_dir/manual")"
+    [ "$result" = "$install_dir:/usr/bin:/bin" ] || fail "manual PATH instruction was not literal"
+  done
+  for path_value in "$TMP_ROOT/bad"$'\n''path' "$TMP_ROOT/bad"$'\r''path'; do
+    before_calls="$(cksum <"$TMP_ROOT/install-curl.calls")"
+    if env HOME="$home_dir" PATH="$fakebin:$PATH" sh "$INSTALL_SH" --dir "$path_value" \
+      >"$stdout_file" 2>"$stderr_file"; then
+      fail "installer accepted a newline or carriage return in the path"
+    fi
+    [ "$before_calls" = "$(cksum <"$TMP_ROOT/install-curl.calls")" ] || fail "installer downloaded before validating path"
+  done
 }
 
 assert_self_update() {
@@ -1710,6 +1745,7 @@ main() {
   assert_status_colors_are_fixed_rgb
   assert_missing_dependencies_fail_early
   assert_posix_installer
+  assert_installer_paths_are_literal
   assert_self_update
 
   # multi-directory: scan two separate roots
